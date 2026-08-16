@@ -40,10 +40,17 @@ jobs:
           sudo apt-get clean
           df -h
 
-      - name: Install dependencies
+      - name: Install base dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python3-pip libelf-dev dwarves cpio automake autoconf lld llvm gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+          sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python3-pip libelf-dev dwarves cpio automake autoconf lld llvm
+
+      - name: Install cross-compilers
+        run: |
+          echo "Installing cross-compilers separately..."
+          sudo apt-get install -y gcc-aarch64-linux-gnu || true
+          sudo apt-get install -y gcc-arm-linux-gnueabi || true
+          echo "Cross-compilers setup done"
 
       - name: Cache Clang
         id: cache-clang
@@ -69,30 +76,40 @@ jobs:
           echo "Clang installed"
           ./bin/clang --version
 
-      - name: Setup GCC
+      - name: Setup GCC links
         run: |
           echo "Setting up GCC cross-compilers..."
           mkdir -p /home/runner/gcc-64/bin /home/runner/gcc-32/bin
           
           # GCC 64-bit
-          ln -sf /usr/bin/aarch64-linux-gnu-gcc /home/runner/gcc-64/bin/aarch64-linux-android-gcc
-          ln -sf /usr/bin/aarch64-linux-gnu-ar /home/runner/gcc-64/bin/aarch64-linux-android-ar
-          ln -sf /usr/bin/aarch64-linux-gnu-nm /home/runner/gcc-64/bin/aarch64-linux-android-nm
-          ln -sf /usr/bin/aarch64-linux-gnu-objcopy /home/runner/gcc-64/bin/aarch64-linux-android-objcopy
-          ln -sf /usr/bin/aarch64-linux-gnu-objdump /home/runner/gcc-64/bin/aarch64-linux-android-objdump
-          ln -sf /usr/bin/aarch64-linux-gnu-strip /home/runner/gcc-64/bin/aarch64-linux-android-strip
+          if [ -f /usr/bin/aarch64-linux-gnu-gcc ]; then
+            ln -sf /usr/bin/aarch64-linux-gnu-gcc /home/runner/gcc-64/bin/aarch64-linux-android-gcc
+            ln -sf /usr/bin/aarch64-linux-gnu-ar /home/runner/gcc-64/bin/aarch64-linux-android-ar
+            ln -sf /usr/bin/aarch64-linux-gnu-nm /home/runner/gcc-64/bin/aarch64-linux-android-nm
+            ln -sf /usr/bin/aarch64-linux-gnu-objcopy /home/runner/gcc-64/bin/aarch64-linux-android-objcopy
+            ln -sf /usr/bin/aarch64-linux-gnu-objdump /home/runner/gcc-64/bin/aarch64-linux-android-objdump
+            ln -sf /usr/bin/aarch64-linux-gnu-strip /home/runner/gcc-64/bin/aarch64-linux-android-strip
+            echo "GCC 64-bit linked"
+          else
+            echo "GCC 64-bit not found, skipping"
+          fi
           
           # GCC 32-bit
-          ln -sf /usr/bin/arm-linux-gnueabi-gcc /home/runner/gcc-32/bin/arm-linux-androideabi-gcc
-          ln -sf /usr/bin/arm-linux-gnueabi-ar /home/runner/gcc-32/bin/arm-linux-androideabi-ar
-          ln -sf /usr/bin/arm-linux-gnueabi-nm /home/runner/gcc-32/bin/arm-linux-androideabi-nm
-          ln -sf /usr/bin/arm-linux-gnueabi-objcopy /home/runner/gcc-32/bin/arm-linux-androideabi-objcopy
-          ln -sf /usr/bin/arm-linux-gnueabi-objdump /home/runner/gcc-32/bin/arm-linux-androideabi-objdump
-          ln -sf /usr/bin/arm-linux-gnueabi-strip /home/runner/gcc-32/bin/arm-linux-androideabi-strip
+          if [ -f /usr/bin/arm-linux-gnueabi-gcc ]; then
+            ln -sf /usr/bin/arm-linux-gnueabi-gcc /home/runner/gcc-32/bin/arm-linux-androideabi-gcc
+            ln -sf /usr/bin/arm-linux-gnueabi-ar /home/runner/gcc-32/bin/arm-linux-androideabi-ar
+            ln -sf /usr/bin/arm-linux-gnueabi-nm /home/runner/gcc-32/bin/arm-linux-androideabi-nm
+            ln -sf /usr/bin/arm-linux-gnueabi-objcopy /home/runner/gcc-32/bin/arm-linux-androideabi-objcopy
+            ln -sf /usr/bin/arm-linux-gnueabi-objdump /home/runner/gcc-32/bin/arm-linux-androideabi-objdump
+            ln -sf /usr/bin/arm-linux-gnueabi-strip /home/runner/gcc-32/bin/arm-linux-androideabi-strip
+            echo "GCC 32-bit linked"
+          else
+            echo "GCC 32-bit not found, skipping"
+          fi
           
           echo "GCC setup complete"
-          ls -la /home/runner/gcc-64/bin/ | head -10
-          ls -la /home/runner/gcc-32/bin/ | head -10
+          ls -la /home/runner/gcc-64/bin/ 2>/dev/null | head -10
+          ls -la /home/runner/gcc-32/bin/ 2>/dev/null | head -10
 
       - name: Clone kernel
         run: |
@@ -223,8 +240,8 @@ jobs:
 
           . /tmp/anykernel/tools/ak3-core.sh;
           split_boot;
-          flash_boot;
-          HEREDOC
+          vflash_boot;
+          vHEREDOC
           
           ZIP_NAME="ReSukiSU-kiev-$(date +%Y%m%d).zip"
           zip -r9 "../$ZIP_NAME" *
