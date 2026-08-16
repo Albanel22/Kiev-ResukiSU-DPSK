@@ -1,0 +1,444 @@
+name: Build ReSukiSU-SusFS Kernel for kiev
+
+on:
+  workflow_dispatch:
+    inputs:
+      clean_build:
+        description: 'Build propre (ignore le cache)'
+        type: boolean
+        default: false
+      debug_mode:
+        description: 'Mode debug (logs plus détaillés)'
+        type: boolean
+        default: false
+      ksu_version:
+        description: 'Version ReSukiSU à utiliser'
+        type: choice
+        options:
+          - 'main'
+          - 'dev'
+          - 'stable'
+        default: 'main'
+
+env:
+  DEVICE: kiev
+  KERNEL_BRANCH: lineage-23.2
+  KERNEL_REPO: https://github.com/LineageOS/android_kernel_motorola_sm8250.git
+  RESUKISU_REPO: https://github.com/ReSukiSU/ReSukiSU.git
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Initialisation
+        run: |
+          echo "========================================="
+          echo "Démarrage du build ReSukiSU pour kiev"
+          echo "========================================="
+          echo "Date: $(date)"
+          echo "Runner: $RUNNER_OS"
+          echo "CPU: $(nproc) cores"
+          echo "RAM: $(free -h | awk '/^Mem:/ {print $2}')"
+          echo "========================================="
+          echo "BUILD_START=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Nettoyage de l'espace disque
+        run: |
+          echo "=== Espace avant nettoyage ==="
+          df -h /
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo apt-get clean -y
+          sudo apt-get autoremove -y
+          sudo rm -rf /var/cache/apt/archives/*
+          echo "=== Espace après nettoyage ==="
+          df -h /
+
+      - name: Installation des dépendances
+        run: |
+          echo "=== Installation des paquets ==="
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            bc bison build-essential ccache curl flex g++-multilib \
+            gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev \
+            lib32readline-dev lib32z1-dev liblz4-tool libncurses5 \
+            libncurses5-dev libsdl1.2-dev libssl-dev libxml2 \
+            libxml2-utils lzop pngcrush rsync schedtool squashfs-tools \
+            xsltproc zip zlib1g-dev python3 python3-pip \
+            libelf-dev dwarves cpio automake autoconf lld llvm \
+            libcap-dev libcap-ng-dev 2>&1 | grep -v "^$" || true
+          echo "Dépendances installées"
+          ccache -M 10G
+          ccache -s
+
+      - name: Cache Clang
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: ~/clang
+          key: clang-r487747c-17.0.2
+
+      - name: Téléchargement Clang
+        if: steps.cache-clang.outputs.cache-hit != 'true' || github.event.inputs.clean_build == 'true'
+        run: |
+          echo "=== Téléchargement de Clang ==="
+          mkdir -p ~/clang
+          cd ~/clang
+          for version in "r487747c" "r475365b" "r450784e"; do
+            echo "Essai de la version: $version"
+            if wget -q "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${version}.tar.gz" -O clang.tar.gz; then
+              if tar -xzf clang.tar.gz 2>/dev/null; then
+                echo "Clang $version téléchargé et extrait"
+                rm clang.tar.gz
+                break
+              fi
+            fi
+            echo "Échec avec $version, essai suivant..."
+          done
+          if [ -f "bin/clang" ]; then
+            echo "Clang installé: $(./bin/clang --version | head -1)"
+          else
+            echo "Clang non installé correctement"
+            ls -la
+            exit 1
+          fi
+
+      - name: Cache GCC
+        id: cache-gcc
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/gcc-64
+            ~/gcc-32
+          key: gcc-arm-4.9
+
+      - name: Téléchargement GCC
+        if: steps.cache-gcc.outputs.cache-hit != 'true' || github.event.inputs.clean_build == 'true'
+        run: |
+          echo "=== Téléchargement de GCC ==="
+          mkdir -p ~/gcc-64
+          cd ~/gcc-64
+          wget -q "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/android13-release.tar.gz" -O gcc64.tar.gz
+          tar -xzf gcc64.tar.gz
+          rm gcc64.tar.gz
+          echo "GCC 64-bit installé"
+          mkdir -p ~/gcc-32
+          cd ~/gcc-32
+          wget -q "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/android13-release.tar.gz" -O gcc32.tar.gz
+          tar -xzf gcc32.tar.gz
+          rm gcc32.tar.gz
+          echo "GCC 32-bit installé"
+
+      - name: Clonage du kernel LineageOS
+        run: |
+          echo "=== Clonage du kernel LineageOS (${{ env.KERNEL_BRANCH }}) ==="
+          git clone --depth=1 --branch ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} kernel_sources 2>&1 | tee clone.log
+          if [ $? -ne 0 ]; then
+            echo "Échec du clonage. Tentative sans --depth..."
+            git clone --branch ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} kernel_sources 2>&1 | tee clone.log
+          fi
+          cd kernel_sources
+          echo "=== Informations du kernel ==="
+          echo "Version: $(head -5 Makefile | grep -E 'VERSION|PATCHLEVEL|SUBLEVEL' | tr '\n' ' ')"
+          echo "Commit: $(git log --oneline -1)"
+          echo "Branche: $(git branch --show-current)"
+          echo "=== Configs kiev disponibles ==="
+          find arch/arm64/configs/ -name "*kiev*" 2>/dev/null || echo "Pas de config kiev spécifique"
+
+      - name: Clonage de ReSukiSU
+        run: |
+          echo "=== Clonage de ReSukiSU ==="
+          BRANCH="${{ github.event.inputs.ksu_version || 'main' }}"
+          echo "Branche: $BRANCH"
+          git clone --depth=1 --branch $BRANCH ${{ env.RESUKISU_REPO }} ReSukiSU 2>&1 | tee resukisu-clone.log
+          if [ $? -ne 0 ]; then
+            echo "Branche $BRANCH non trouvée, essai avec main..."
+            git clone --depth=1 ${{ env.RESUKISU_REPO }} ReSukiSU
+          fi
+          cd ReSukiSU
+          echo "=== Structure de ReSukiSU ==="
+          echo "Commit: $(git log --oneline -1)"
+          echo "=== Contenu ==="
+          ls -la
+          echo "=== Dossiers principaux ==="
+          find . -maxdepth 2 -type d | head -20
+          echo "=== Fichiers SusFS ==="
+          find . -name "*susfs*" -o -name "*sus_fs*" | head -20
+
+      - name: Application de ReSukiSU
+        run: |
+          cd kernel_sources
+          echo "=== Intégration de ReSukiSU ==="
+          echo "Structure de ReSukiSU:"
+          if [ -d "../ReSukiSU/kernel" ]; then
+            echo "Dossier kernel trouvé"
+            ls ../ReSukiSU/kernel/
+          else
+            echo "Dossier kernel non trouvé"
+            find ../ReSukiSU -type d -maxdepth 2
+          fi
+          if [ -d "../ReSukiSU/kernel" ]; then
+            echo "Copie des fichiers kernel..."
+            mkdir -p drivers/kernelsu
+            cp -r ../ReSukiSU/kernel/* drivers/kernelsu/
+            echo "Fichiers copiés"
+          fi
+          if ! grep -q "kernelsu" drivers/Makefile; then
+            echo "" >> drivers/Makefile
+            echo "obj-y += kernelsu/" >> drivers/Makefile
+            echo "Makefile modifié"
+          else
+            echo "Makefile déjà modifié"
+          fi
+          if ! grep -q "kernelsu" drivers/Kconfig; then
+            echo "" >> drivers/Kconfig
+            echo "source \"drivers/kernelsu/Kconfig\"" >> drivers/Kconfig
+            echo "Kconfig modifié"
+          else
+            echo "Kconfig déjà modifié"
+          fi
+          if ! grep -q "handle_kernelsu" fs/exec.c; then
+            echo "Modification de fs/exec.c..."
+            if ! grep -q "extern int handle_kernelsu" fs/exec.c; then
+              sed -i '/#include <linux\/fs.h>/a\nextern int handle_kernelsu(int argc, char *argv[]);' fs/exec.c
+            fi
+            if ! grep -q "handle_kernelsu(argc" fs/exec.c; then
+              python3 - << 'EOF'
+import re
+
+with open('fs/exec.c', 'r') as f:
+    content = f.read()
+
+pattern = r'(static int do_execveat_common.*?\{)'
+replacement = r'\1\n\tif (unlikely(handle_kernelsu(argc, argv))) {\n\t\treturn 0;\n\t}'
+
+content = re.sub(pattern, replacement, content, count=1)
+
+with open('fs/exec.c', 'w') as f:
+    f.write(content)
+EOF
+            fi
+            echo "fs/exec.c modifié"
+          else
+            echo "fs/exec.c déjà modifié"
+          fi
+          echo "=== Recherche des patches SusFS ==="
+          find ../ReSukiSU -name "*.patch" -type f | while read patch; do
+            echo "Patch trouvé: $patch"
+            if [[ "$patch" == *"4.19"* ]] || [[ "$patch" == *"susfs"* ]]; then
+              echo "Application de: $patch"
+              if git apply --check "$patch" 2>/dev/null; then
+                git apply "$patch"
+                echo "Patch appliqué"
+              else
+                echo "Patch non applicable: $patch"
+              fi
+            fi
+          done
+          echo "=== Vérification de l'intégration ==="
+          echo "Fichiers KernelSU:"
+          ls drivers/kernelsu/ | head -10
+          echo "Config SusFS:"
+          find . -name "*susfs*" | head -10
+
+      - name: Configuration du kernel
+        run: |
+          cd kernel_sources
+          echo "=== Configuration du kernel ==="
+          CONFIG_FOUND=0
+          for config in \
+            "arch/arm64/configs/lineage_kiev_defconfig" \
+            "arch/arm64/configs/lineageos_kiev_defconfig" \
+            "arch/arm64/configs/vendor/kiev_defconfig" \
+            "arch/arm64/configs/kiev_defconfig"; do
+            if [ -f "$config" ]; then
+              echo "Utilisation de: $config"
+              cp "$config" .config
+              CONFIG_FOUND=1
+              break
+            fi
+          done
+          if [ $CONFIG_FOUND -eq 0 ]; then
+            echo "Recherche de configs alternatives..."
+            CONFIG=$(find arch/arm64/configs/ -name "*sm8250*" -o -name "*kiev*" | head -1)
+            if [ -n "$CONFIG" ]; then
+              cp "$CONFIG" .config
+              echo "Config alternative: $CONFIG"
+            else
+              echo "Aucune config trouvée"
+              exit 1
+            fi
+          fi
+          echo "=== Activation des fonctionnalités ==="
+          ./scripts/config --enable KSU
+          ./scripts/config --enable KPROBES
+          ./scripts/config --enable HAVE_KPROBES
+          ./scripts/config --enable KPROBE_EVENTS
+          ./scripts/config --enable SUSFS
+          ./scripts/config --enable OVERLAY_FS
+          ./scripts/config --enable MODULES
+          ./scripts/config --enable MODULE_UNLOAD
+          ./scripts/config --enable WIREGUARD
+          ./scripts/config --module TTL
+          ./scripts/config --enable TCP_CONG_BBR
+          ./scripts/config --set-str DEFAULT_TCP_CONG "bbr"
+          if [ "${{ github.event.inputs.debug_mode }}" != "true" ]; then
+            ./scripts/config --disable DEBUG_INFO
+            ./scripts/config --disable DEBUG_KERNEL
+            ./scripts/config --disable SLUB_DEBUG
+          fi
+          make ARCH=arm64 olddefconfig
+          echo "=== Vérification des configs ==="
+          echo "KSU: $(grep CONFIG_KSU= .config)"
+          echo "SUSFS: $(grep CONFIG_SUSFS= .config)"
+          echo "KPROBES: $(grep CONFIG_KPROBES= .config)"
+          echo "OVERLAY_FS: $(grep CONFIG_OVERLAY_FS= .config)"
+
+      - name: Compilation du kernel
+        run: |
+          cd kernel_sources
+          echo "=== Démarrage de la compilation ==="
+          echo "Date: $(date)"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH="$HOME/clang/bin:$HOME/gcc-64/bin:$HOME/gcc-32/bin:$PATH"
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          export CC=clang
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          echo "=== Vérification des outils ==="
+          echo "Clang: $(clang --version | head -1)"
+          echo "GCC 64: $(aarch64-linux-android-gcc --version | head -1)"
+          echo "GCC 32: $(arm-linux-androideabi-gcc --version | head -1)"
+          echo "=== Compilation avec $(nproc) threads ==="
+          make -j$(nproc --all) \
+            O=out \
+            ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            2>&1 | tee build.log
+          echo "=== Vérification du résultat ==="
+          if [ -f "out/arch/arm64/boot/Image.gz" ] || [ -f "out/arch/arm64/boot/Image" ]; then
+            echo "Compilation réussie"
+            ls -lh out/arch/arm64/boot/
+          else
+            echo "Échec de la compilation"
+            echo "=== Dernières erreurs ==="
+            grep -i "error:" build.log | tail -20
+            exit 1
+          fi
+
+      - name: Création du package
+        run: |
+          echo "=== Création du package AnyKernel3 ==="
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
+          cd AnyKernel3
+          rm -f Image* dtb* *.zip
+          cp ../kernel_sources/out/arch/arm64/boot/Image.gz . 2>/dev/null || cp ../kernel_sources/out/arch/arm64/boot/Image .
+          cp ../kernel_sources/out/arch/arm64/boot/Image.gz-dtb . 2>/dev/null || true
+          cp ../kernel_sources/out/arch/arm64/boot/dtb.img . 2>/dev/null || true
+          cp ../kernel_sources/out/arch/arm64/boot/dtbo.img . 2>/dev/null || true
+          mkdir -p modules
+          find ../kernel_sources/out -name "*.ko" -exec cp {} modules/ \;
+          echo "Modules:"
+          ls modules/ | head -10
+          cat > anykernel.sh << 'EOF'
+# AnyKernel3 Script
+properties() { '
+kernel.string=ReSukiSU-SusFS Kernel for Motorola One 5G Ace
+do.devicecheck=1
+do.modules=1
+do.systemless=1
+do.cleanup=1
+do.cleanuponabort=0
+device.name1=kiev
+device.name2=kiev
+device.name3=kiev
+device.name4=kiev
+device.name5=kiev
+supported.versions=14 - 16
+'; }
+
+block=/dev/block/bootdevice/by-name/boot;
+is_slot_device=0;
+ramdisk_compression=auto;
+
+. /tmp/anykernel/tools/ak3-core.sh;
+split_boot;
+flash_boot;
+flash_dtbo;
+EOF
+          ZIP_NAME="ReSukiSU-SusFS-kiev-$(date +%Y%m%d).zip"
+          zip -r9 "../$ZIP_NAME" *
+          cd ..
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+          echo "Package créé: $ZIP_NAME"
+          ls -lh "$ZIP_NAME"
+
+      - name: Upload des artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReSukiSU-SusFS-kiev
+          path: ReSukiSU-SusFS-kiev-*.zip
+          compression-level: 0
+
+      - name: Upload du kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-Image
+          path: |
+            kernel_sources/out/arch/arm64/boot/Image*
+            kernel_sources/out/arch/arm64/boot/dtb*
+          compression-level: 9
+
+      - name: Upload des logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            kernel_sources/build.log
+            *.log
+          compression-level: 9
+
+      - name: Résumé du build
+        if: always()
+        run: |
+          BUILD_END=$(date +%s)
+          BUILD_DURATION=$((BUILD_END - BUILD_START))
+          echo "========================================="
+          echo "RÉSUMÉ DU BUILD"
+          echo "========================================="
+          echo "Statut: ${{ job.status }}"
+          echo "Durée: $((BUILD_DURATION / 60)) minutes"
+          echo "Device: ${{ env.DEVICE }}"
+          echo "Kernel: ${{ env.KERNEL_BRANCH }}"
+          echo "ReSukiSU: ${{ github.event.inputs.ksu_version || 'main' }}"
+          echo "========================================="
+          if [ -f "ReSukiSU-SusFS-kiev-"*.zip ]; then
+            echo "Package:"
+            ls -lh ReSukiSU-SusFS-kiev-*.zip
+          fi
+          if [ -f "kernel_sources/out/arch/arm64/boot/Image" ]; then
+            echo "Image:"
+            ls -lh kernel_sources/out/arch/arm64/boot/
+          fi
+          echo "========================================="
