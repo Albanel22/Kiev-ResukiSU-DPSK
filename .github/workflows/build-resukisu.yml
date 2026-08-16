@@ -43,46 +43,56 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python3-pip libelf-dev dwarves cpio automake autoconf lld llvm
+          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python3-pip libelf-dev dwarves cpio automake autoconf lld llvm gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
       - name: Cache Clang
         id: cache-clang
         uses: actions/cache@v4
         with:
           path: /home/runner/clang
-          key: clang-toolchain-v1
+          key: clang-toolchain-v2
 
       - name: Download Clang
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           mkdir -p /home/runner/clang
           cd /home/runner/clang
-          wget https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+          echo "Downloading Clang..."
+          wget -q --timeout=60 https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+          if [ $? -ne 0 ]; then
+            echo "Failed to download Clang"
+            exit 1
+          fi
           tar -xf clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
           mv clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04/* .
           rm -rf clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04 clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+          echo "Clang installed"
+          ./bin/clang --version
 
-      - name: Cache GCC
-        id: cache-gcc
-        uses: actions/cache@v4
-        with:
-          path: |
-            /home/runner/gcc-64
-            /home/runner/gcc-32
-          key: gcc-toolchain-v1
-
-      - name: Download GCC
-        if: steps.cache-gcc.outputs.cache-hit != 'true'
+      - name: Setup GCC
         run: |
-          mkdir -p /home/runner/gcc-64 /home/runner/gcc-32
-          cd /home/runner/gcc-64
-          wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/android13-release.tar.gz -O gcc64.tar.gz
-          tar -xzf gcc64.tar.gz
-          rm gcc64.tar.gz
-          cd /home/runner/gcc-32
-          wget -q https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/android13-release.tar.gz -O gcc32.tar.gz
-          tar -xzf gcc32.tar.gz
-          rm gcc32.tar.gz
+          echo "Setting up GCC cross-compilers..."
+          mkdir -p /home/runner/gcc-64/bin /home/runner/gcc-32/bin
+          
+          # GCC 64-bit
+          ln -sf /usr/bin/aarch64-linux-gnu-gcc /home/runner/gcc-64/bin/aarch64-linux-android-gcc
+          ln -sf /usr/bin/aarch64-linux-gnu-ar /home/runner/gcc-64/bin/aarch64-linux-android-ar
+          ln -sf /usr/bin/aarch64-linux-gnu-nm /home/runner/gcc-64/bin/aarch64-linux-android-nm
+          ln -sf /usr/bin/aarch64-linux-gnu-objcopy /home/runner/gcc-64/bin/aarch64-linux-android-objcopy
+          ln -sf /usr/bin/aarch64-linux-gnu-objdump /home/runner/gcc-64/bin/aarch64-linux-android-objdump
+          ln -sf /usr/bin/aarch64-linux-gnu-strip /home/runner/gcc-64/bin/aarch64-linux-android-strip
+          
+          # GCC 32-bit
+          ln -sf /usr/bin/arm-linux-gnueabi-gcc /home/runner/gcc-32/bin/arm-linux-androideabi-gcc
+          ln -sf /usr/bin/arm-linux-gnueabi-ar /home/runner/gcc-32/bin/arm-linux-androideabi-ar
+          ln -sf /usr/bin/arm-linux-gnueabi-nm /home/runner/gcc-32/bin/arm-linux-androideabi-nm
+          ln -sf /usr/bin/arm-linux-gnueabi-objcopy /home/runner/gcc-32/bin/arm-linux-androideabi-objcopy
+          ln -sf /usr/bin/arm-linux-gnueabi-objdump /home/runner/gcc-32/bin/arm-linux-androideabi-objdump
+          ln -sf /usr/bin/arm-linux-gnueabi-strip /home/runner/gcc-32/bin/arm-linux-androideabi-strip
+          
+          echo "GCC setup complete"
+          ls -la /home/runner/gcc-64/bin/ | head -10
+          ls -la /home/runner/gcc-32/bin/ | head -10
 
       - name: Clone kernel
         run: |
