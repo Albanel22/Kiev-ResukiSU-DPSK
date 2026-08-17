@@ -56,6 +56,8 @@ with open('fs/exec.c', 'w') as f:
     f.write(content)
 PYEOF
   python3 /tmp/hook_execveat.py
+else
+  echo "Hook execveat déjà présent"
 fi
 
 echo "=== Injection hook faccessat ==="
@@ -95,9 +97,11 @@ with open('fs/open.c', 'w') as f:
     f.write(content)
 PYEOF
   python3 /tmp/hook_faccessat.py
+else
+  echo "Hook faccessat déjà présent"
 fi
 
-echo "=== Injection hook stat + newfstat_ret + fstat64_ret ==="
+echo "=== Injection hook stat complet (stat + newfstat_ret + fstat64_ret) ==="
 if ! grep -q "ksu_handle_fstat64_ret" fs/stat.c; then
   cat > /tmp/hook_stat_complete.py << 'PYEOF'
 import re
@@ -204,8 +208,11 @@ if 'ksu_handle_fstat64_ret' not in content:
 
 with open('fs/stat.c', 'w') as f:
     f.write(content)
+print("=== Tous les hooks stat injectés ===")
 PYEOF
   python3 /tmp/hook_stat_complete.py
+else
+  echo "Hooks stat déjà présents"
 fi
 
 echo "=== Configuration ==="
