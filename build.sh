@@ -30,40 +30,61 @@ echo "=== Clonage du kernel ==="
 git clone --depth=1 --branch lineage-23.2 https://github.com/LineageOS/android_kernel_motorola_sm8250.git kernel_sources
 cd kernel_sources
 
-echo "=== Ajout de ReSukiSU comme submodule ==="
+echo "=== Clonage de ReSukiSU ==="
+git clone --depth=1 https://github.com/Albanel22/ReSukiSU.git /tmp/ReSukiSU
 
-git init 2>/dev/null || true
+echo "=== Structure de ReSukiSU ==="
+ls -la /tmp/ReSukiSU/
+echo "=== Contenu du dossier kernel ==="
+ls -la /tmp/ReSukiSU/kernel/
 
-git submodule add https://github.com/ReSukiSU/ReSukiSU.git drivers/kernelsu 2>/dev/null || {
-  echo "Submodule add échoué, essai alternatif..."
-  rm -rf drivers/kernelsu
-  git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git drivers/kernelsu
-}
+echo "=== Copie des fichiers kernel vers drivers/kernelsu ==="
+mkdir -p drivers/kernelsu
+cp -r /tmp/ReSukiSU/kernel/* drivers/kernelsu/
 
-git submodule update --init --recursive 2>/dev/null || true
-
-echo "=== Vérification du submodule ==="
+echo "=== Vérification ==="
 ls -la drivers/kernelsu/
-if [ -d "drivers/kernelsu/.git" ] || [ -f "drivers/kernelsu/.git" ]; then
-  echo "OK: ReSukiSU est un submodule git valide"
+
+if [ -f "drivers/kernelsu/Kconfig" ]; then
+  echo "OK: Kconfig présent"
 else
-  echo "Creation du .git artificiel..."
-  if [ ! -d "drivers/kernelsu/.git" ]; then
-    mkdir -p drivers/kernelsu/.git
-    echo "gitdir: ../../.git/modules/drivers/kernelsu" > drivers/kernelsu/.git
+  echo "ERREUR: Kconfig toujours absent"
+  exit 1
+fi
+
+if [ -f "drivers/kernelsu/Makefile" ] || [ -f "drivers/kernelsu/Kbuild" ]; then
+  echo "OK: Makefile/Kbuild présent"
+else
+  echo "Recherche du Makefile..."
+  find /tmp/ReSukiSU/ -name "Makefile" -o -name "Kbuild" | head -5
+  # Copier le Makefile s'il est ailleurs
+  MAKEFILE=$(find /tmp/ReSukiSU/ -name "Makefile" -o -name "Kbuild" | head -1)
+  if [ -n "$MAKEFILE" ]; then
+    cp "$MAKEFILE" drivers/kernelsu/
+    echo "OK: Makefile copié depuis $MAKEFILE"
   fi
 fi
 
+# Créer le .git artificiel
+if [ ! -d "drivers/kernelsu/.git" ] && [ ! -f "drivers/kernelsu/.git" ]; then
+  mkdir -p drivers/kernelsu/.git
+  echo "gitdir: ../../.git/modules/drivers/kernelsu" > drivers/kernelsu/.git
+  echo "OK: .git artificiel créé"
+fi
+
+# Modifier le Makefile du kernel
 if ! grep -q "kernelsu" drivers/Makefile; then
   echo "obj-y += kernelsu/" >> drivers/Makefile
   echo "OK: Makefile modifié"
 fi
 
+# Modifier le Kconfig du kernel
 if ! grep -q "kernelsu" drivers/Kconfig; then
   echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
   echo "OK: Kconfig modifié"
 fi
 
+# Modifier fs/exec.c
 if ! grep -q "handle_kernelsu" fs/exec.c; then
   sed -i '/#include <linux\/fs.h>/a extern int handle_kernelsu(int argc, char *argv[]);' fs/exec.c
   cat > /tmp/patch_exec.py << 'PYEOF'
