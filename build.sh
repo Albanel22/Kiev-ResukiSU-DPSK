@@ -19,11 +19,6 @@ echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-echo "=== Version ReSukiSU détectée ==="
-if [ -f "drivers/kernelsu/Makefile" ] || [ -f "drivers/kernelsu/Kbuild" ]; then
-  grep -i "version" drivers/kernelsu/Makefile drivers/kernelsu/Kbuild 2>/dev/null | head -5 || true
-fi
-
 echo "=== Injection des hooks CORRECTS pour kernel 4.19 ==="
 python3 << 'PYEOF'
 import re, os
@@ -51,7 +46,6 @@ def inject(path, declaration, call, search_pattern):
     else:
         print(f"Pattern non trouvé dans {path}")
 
-# 1. fs/exec.c
 inject(
     "fs/exec.c",
     """#ifdef CONFIG_KSU_MANUAL_HOOK
@@ -65,7 +59,6 @@ extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
     r'int do_execve\(struct filename \*filename,\n\tconst char __user \*const __user \*__argv,\n\tconst char __user \*const __user \*__envp\)\n\{'
 )
 
-# 2. fs/stat.c
 inject(
     "fs/stat.c",
     """#ifdef CONFIG_KSU_MANUAL_HOOK
@@ -91,7 +84,6 @@ extern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statb
     r'SYSCALL_DEFINE2\(newfstat, unsigned int, fd, struct stat __user \*, statbuf\)\n\{'
 )
 
-# 3. fs/open.c
 inject(
     "fs/open.c",
     """#ifdef CONFIG_KSU_MANUAL_HOOK
@@ -105,7 +97,6 @@ extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
     r'SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\n\{'
 )
 
-# 4. fs/read_write.c
 inject(
     "fs/read_write.c",
     """#ifdef CONFIG_KSU_MANUAL_HOOK
@@ -120,7 +111,6 @@ extern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd,
     r'SYSCALL_DEFINE3\(read, unsigned int, fd, char __user \*, buf, size_t, count\)\n\{'
 )
 
-# 5. drivers/input/input.c
 inject(
     "drivers/input/input.c",
     """#ifdef CONFIG_KSU_MANUAL_HOOK
@@ -135,7 +125,6 @@ extern __attribute__((cold)) int ksu_handle_input_handle_event(
     r'void input_event\(struct input_dev \*dev,\n\t\t unsigned int type, unsigned int code, int value\)\n\{'
 )
 
-# 6. kernel/reboot.c
 inject(
     "kernel/reboot.c",
     """#ifdef CONFIG_KSU_MANUAL_HOOK
@@ -147,7 +136,6 @@ extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void 
     r'SYSCALL_DEFINE4\(reboot, int, magic1, int, magic2, unsigned int, cmd,\n\t\tvoid __user \*, arg\)\n\{'
 )
 
-# 7. kernel/sys.c
 inject(
     "kernel/sys.c",
     """#ifdef CONFIG_KSU_MANUAL_HOOK
@@ -161,12 +149,6 @@ extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
 
 print("=== Tous les hooks injectés correctement ===")
 PYEOF
-
-echo "=== Vérification des hooks ==="
-for f in fs/exec.c fs/stat.c fs/open.c fs/read_write.c drivers/input/input.c kernel/reboot.c kernel/sys.c; do
-  COUNT=$(grep -c "ksu_handle" "$f" 2>/dev/null || echo "0")
-  echo "$f: $COUNT hooks"
-done
 
 echo "=== Configuration ==="
 export ARCH=arm64
@@ -187,11 +169,18 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_KPROBES=y"
   echo "CONFIG_HAVE_KPROBES=y"
   echo "CONFIG_KRETPROBES=y"
+  echo "# CONFIG_COMPAT_VDSO is not set"
+  echo "# CONFIG_VDSO32 is not set"
+  echo "# CONFIG_VDSO_COMPAT is not set"
 } >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-echo "=== Compilation (version ReSukiSU auto-détectée) ==="
+echo "=== Vérification VDSO32 ==="
+grep "CONFIG_COMPAT_VDSO" out/.config || echo "COMPAT_VDSO désactivé"
+grep "CONFIG_VDSO32" out/.config || echo "VDSO32 désactivé"
+
+echo "=== Compilation ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
 if [ -f "out/arch/arm64/boot/Image" ]; then
