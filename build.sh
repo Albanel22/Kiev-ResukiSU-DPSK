@@ -13,11 +13,7 @@ echo "=== Téléchargement du GCC Android 4.9 ==="
 mkdir -p /home/runner/gcc-arm64 /home/runner/gcc-arm32
 
 cd /home/runner/gcc-arm64
-echo "Téléchargement GCC 64-bit..."
-wget -q --timeout=60 --tries=3 "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/android13-release.tar.gz" -O gcc64.tar.gz || {
-  echo "Fallback: GitHub mirror..."
-  wget -q --timeout=60 "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9/archive/refs/heads/lineage-22.2.tar.gz" -O gcc64.tar.gz || true
-}
+wget -q --timeout=60 --tries=3 "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/android13-release.tar.gz" -O gcc64.tar.gz || true
 
 if [ -f "gcc64.tar.gz" ]; then
   tar -xzf gcc64.tar.gz 2>/dev/null || true
@@ -29,11 +25,7 @@ if [ -f "gcc64.tar.gz" ]; then
 fi
 
 cd /home/runner/gcc-arm32
-echo "Téléchargement GCC 32-bit..."
-wget -q --timeout=60 --tries=3 "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/android13-release.tar.gz" -O gcc32.tar.gz || {
-  echo "Fallback: GitHub mirror..."
-  wget -q --timeout=60 "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9/archive/refs/heads/lineage-22.2.tar.gz" -O gcc32.tar.gz || true
-}
+wget -q --timeout=60 --tries=3 "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/android13-release.tar.gz" -O gcc32.tar.gz || true
 
 if [ -f "gcc32.tar.gz" ]; then
   tar -xzf gcc32.tar.gz 2>/dev/null || true
@@ -44,13 +36,8 @@ if [ -f "gcc32.tar.gz" ]; then
   rm -f gcc32.tar.gz
 fi
 
-echo "=== Vérification GCC ==="
-ls /home/runner/gcc-arm64/bin/ 2>/dev/null | head -10 || echo "GCC 64-bit non trouvé"
-ls /home/runner/gcc-arm32/bin/ 2>/dev/null | head -10 || echo "GCC 32-bit non trouvé"
-
-# Si les GCC Android ne sont pas disponibles, utiliser le GCC système
+# Fallback : utiliser le GCC système si Android GCC non disponible
 if [ ! -d "/home/runner/gcc-arm64/bin" ]; then
-  echo "Utilisation du GCC système comme fallback..."
   mkdir -p /home/runner/gcc-arm64/bin
   for tool in gcc ar nm objcopy objdump strip ld; do
     if [ -f "/usr/bin/aarch64-linux-gnu-$tool" ]; then
@@ -276,6 +263,8 @@ echo "Config: $CONFIG"
 
 ./scripts/config --enable KSU
 ./scripts/config --enable KSU_MANUAL_HOOK
+./scripts/config --enable COMPAT
+./scripts/config --enable COMPAT_32BIT_TIME
 
 make ARCH=arm64 olddefconfig
 
