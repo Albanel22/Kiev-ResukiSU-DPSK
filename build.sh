@@ -7,53 +7,52 @@ sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 sudo apt-get clean
 
 sudo apt-get update
-sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python3-pip libelf-dev dwarves cpio automake autoconf mkbootimg gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python3-pip libelf-dev dwarves cpio automake autoconf mkbootimg
 
-echo "=== Téléchargement du GCC Android 4.9 ==="
+echo "=== Téléchargement du GCC Android 4.9 (depuis GitHub LineageOS) ==="
 mkdir -p /home/runner/gcc-arm64 /home/runner/gcc-arm32
 
+# GCC 64-bit - depuis GitHub (plus fiable que Google)
 cd /home/runner/gcc-arm64
-wget -q --timeout=60 --tries=3 "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/android13-release.tar.gz" -O gcc64.tar.gz || true
+echo "Téléchargement GCC 64-bit depuis GitHub..."
+wget -q --timeout=120 "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9/archive/refs/heads/lineage-22.2.tar.gz" -O gcc64.tar.gz
 
-if [ -f "gcc64.tar.gz" ]; then
-  tar -xzf gcc64.tar.gz 2>/dev/null || true
-  if [ -d "android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9-lineage-22.2" ]; then
-    mv android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9-lineage-22.2/* .
-    rm -rf android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9-lineage-22.2
+if [ -f "gcc64.tar.gz" ] && [ -s "gcc64.tar.gz" ]; then
+  tar -xzf gcc64.tar.gz
+  DIR=$(ls -d android_prebuilts_gcc* 2>/dev/null | head -1)
+  if [ -n "$DIR" ]; then
+    mv "$DIR"/* .
+    rm -rf "$DIR"
   fi
   rm -f gcc64.tar.gz
+  echo "GCC 64-bit installé"
+else
+  echo "ERREUR: Impossible de télécharger GCC 64-bit"
+  exit 1
 fi
 
+# GCC 32-bit
 cd /home/runner/gcc-arm32
-wget -q --timeout=60 --tries=3 "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/android13-release.tar.gz" -O gcc32.tar.gz || true
+echo "Téléchargement GCC 32-bit depuis GitHub..."
+wget -q --timeout=120 "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9/archive/refs/heads/lineage-22.2.tar.gz" -O gcc32.tar.gz
 
-if [ -f "gcc32.tar.gz" ]; then
-  tar -xzf gcc32.tar.gz 2>/dev/null || true
-  if [ -d "android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9-lineage-22.2" ]; then
-    mv android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9-lineage-22.2/* .
-    rm -rf android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9-lineage-22.2
+if [ -f "gcc32.tar.gz" ] && [ -s "gcc32.tar.gz" ]; then
+  tar -xzf gcc32.tar.gz
+  DIR=$(ls -d android_prebuilts_gcc* 2>/dev/null | head -1)
+  if [ -n "$DIR" ]; then
+    mv "$DIR"/* .
+    rm -rf "$DIR"
   fi
   rm -f gcc32.tar.gz
+  echo "GCC 32-bit installé"
+else
+  echo "ERREUR: Impossible de télécharger GCC 32-bit"
+  exit 1
 fi
 
-# Fallback : utiliser le GCC système si Android GCC non disponible
-if [ ! -d "/home/runner/gcc-arm64/bin" ]; then
-  mkdir -p /home/runner/gcc-arm64/bin
-  for tool in gcc ar nm objcopy objdump strip ld; do
-    if [ -f "/usr/bin/aarch64-linux-gnu-$tool" ]; then
-      ln -sf /usr/bin/aarch64-linux-gnu-$tool /home/runner/gcc-arm64/bin/aarch64-linux-android-$tool
-    fi
-  done
-fi
-
-if [ ! -d "/home/runner/gcc-arm32/bin" ]; then
-  mkdir -p /home/runner/gcc-arm32/bin
-  for tool in gcc ar nm objcopy objdump strip ld; do
-    if [ -f "/usr/bin/arm-linux-gnueabi-$tool" ]; then
-      ln -sf /usr/bin/arm-linux-gnueabi-$tool /home/runner/gcc-arm32/bin/arm-linux-androideabi-$tool
-    fi
-  done
-fi
+echo "=== Vérification des GCC ==="
+/home/runner/gcc-arm64/bin/aarch64-linux-android-gcc --version | head -1
+/home/runner/gcc-arm32/bin/arm-linux-androideabi-gcc --version | head -1
 
 cd $GITHUB_WORKSPACE
 
@@ -268,12 +267,16 @@ echo "Config: $CONFIG"
 
 make ARCH=arm64 olddefconfig
 
-echo "=== Compilation ==="
+echo "=== Compilation avec GCC Android 4.9 ==="
 export ARCH=arm64
 export SUBARCH=arm64
 export PATH="/home/runner/gcc-arm64/bin:/home/runner/gcc-arm32/bin:$PATH"
 export CROSS_COMPILE=aarch64-linux-android-
 export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+
+# Vérifier que le bon GCC est utilisé
+which aarch64-linux-android-gcc
+aarch64-linux-android-gcc --version | head -1
 
 make -j$(nproc) ARCH=arm64 2>&1 | tee build.log
 
