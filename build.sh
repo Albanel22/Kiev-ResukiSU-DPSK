@@ -320,10 +320,12 @@ if [ -f "boot-stock.img" ]; then
 fi
 
 echo "=== Copie vers output ==="
-mkdir -p /home/runner/output
-cp final_boot.img /home/runner/output/ReSukiSU-boot.img
-cp dtbo-stock.img /home/runner/output/dtbo.img 2>/dev/null || true
-cp kernel_sources/build.log /home/runner/output/
+# Créer le dossier output dans le workspace GitHub (c'est là que le workflow cherche)
+mkdir -p output
+cp final_boot.img output/ReSukiSU-boot.img
+cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
+cp kernel_sources/build.log output/
 
 echo "=== BUILD TERMINÉ ==="
-ls -lh /home/runner/output/
+ls -lh output/
+
