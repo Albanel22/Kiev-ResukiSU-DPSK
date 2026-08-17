@@ -28,11 +28,9 @@ for tool in gcc ar nm objcopy objdump strip ld ld.bfd ld.gold; do
   fi
 done
 
-# Ajouter ld depuis le répertoire clang (lld)
 if [ -f "/home/runner/clang/bin/ld.lld" ]; then
   ln -sf /home/runner/clang/bin/ld.lld /home/runner/gcc-64/bin/aarch64-linux-android-ld
   ln -sf /home/runner/clang/bin/ld.lld /home/runner/gcc-32/bin/arm-linux-androideabi-ld
-  echo "ld.lld lié"
 fi
 
 cd $GITHUB_WORKSPACE
@@ -261,11 +259,17 @@ echo "Config: $CONFIG"
 ./scripts/config --enable KPROBE_EVENTS
 ./scripts/config --enable KALLSYMS_ALL 2>/dev/null || echo "KALLSYMS_ALL ignoré"
 
+# Désactiver VDSO32 (incompatible avec Clang sur kernel 4.19)
+./scripts/config --disable COMPAT_VDSO
+./scripts/config --disable VDSO32
+./scripts/config --disable VDSO_COMPAT
+
 make ARCH=arm64 olddefconfig
 
 echo "=== Vérification des configs ==="
 grep "CONFIG_KSU=" .config || echo "CONFIG_KSU non trouvé"
 grep "CONFIG_KSU_MANUAL_HOOK=" .config || echo "CONFIG_KSU_MANUAL_HOOK non trouvé"
+grep "CONFIG_COMPAT_VDSO" .config || echo "COMPAT_VDSO désactivé"
 
 echo "=== Compilation ==="
 export ARCH=arm64
