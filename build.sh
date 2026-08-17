@@ -46,18 +46,16 @@ extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
 	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: hook execveat injecté")
+        print("OK: execveat")
     else:
         pattern = r'(int do_execve\(struct filename \*filename,.*?struct user_arg_ptr envp = \{ \.ptr\.native = __envp \};\n)'
         replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n'
         content = re.sub(pattern, replacement, content, count=1)
-        print("OK: hook execveat injecté (alternatif)")
+        print("OK: execveat (alternatif)")
 with open('fs/exec.c', 'w') as f:
     f.write(content)
 PYEOF
   python3 /tmp/hook_execveat.py
-else
-  echo "Hook execveat déjà présent"
 fi
 
 echo "=== Injection hook faccessat ==="
@@ -87,26 +85,27 @@ extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
 	return do_faccessat(dfd, filename, mode);'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: hook faccessat injecté")
+        print("OK: faccessat")
     else:
         pattern = r'(SYSCALL_DEFINE3\(faccessat.*?\n\{)'
         replacement = r'\1\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif'
         content = re.sub(pattern, replacement, content, count=1)
-        print("OK: hook faccessat injecté (alternatif)")
+        print("OK: faccessat (alternatif)")
 with open('fs/open.c', 'w') as f:
     f.write(content)
 PYEOF
   python3 /tmp/hook_faccessat.py
-else
-  echo "Hook faccessat déjà présent"
 fi
 
-echo "=== Injection hook stat ==="
-if ! grep -q "ksu_handle_stat" fs/stat.c; then
-  cat > /tmp/hook_stat.py << 'PYEOF'
+echo "=== Injection hook stat + newfstat_ret + fstat64_ret ==="
+if ! grep -q "ksu_handle_fstat64_ret" fs/stat.c; then
+  cat > /tmp/hook_stat_complete.py << 'PYEOF'
 import re
+
 with open('fs/stat.c', 'r') as f:
     content = f.read()
+
+# 1. Déclarations extern
 if 'ksu_handle_stat' not in content:
     extern_decl = '''
 #ifdef CONFIG_KSU_MANUAL_HOOK
@@ -114,10 +113,16 @@ __attribute__((hot))
 extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
 				int *flags);
 extern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);
+#if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)
+extern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **statbuf_ptr);
+#endif
 #endif
 '''
     pattern = r'(SYSCALL_DEFINE4\(newfstatat)'
     content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+
+# 2. Hook newfstatat
+if 'ksu_handle_stat(&dfd' not in content:
     old_code = '''	struct kstat stat;
 	int error;
 
@@ -131,18 +136,76 @@ extern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statb
 	return vfs_fstatat(dfd, filename, &stat, flag);'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: hook stat injecté")
+        print("OK: stat hook")
     else:
         pattern = r'(SYSCALL_DEFINE4\(newfstatat.*?int error;\n)'
         replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n'
         content = re.sub(pattern, replacement, content, count=1)
-        print("OK: hook stat injecté (alternatif)")
+        print("OK: stat hook (alternatif)")
+
+# 3. Hook newfstat ret
+if 'ksu_handle_newfstat_ret' not in content:
+    old_code = '''SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
+{
+	struct kstat stat;
+	int error = vfs_fstat(fd, &stat);
+
+	if (!error)
+		error = cp_new_stat(&stat, statbuf);
+
+	return error;'''
+    new_code = '''SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
+{
+	struct kstat stat;
+	int error = vfs_fstat(fd, &stat);
+
+	if (!error)
+		error = cp_new_stat(&stat, statbuf);
+
+#ifdef CONFIG_KSU_MANUAL_HOOK
+	ksu_handle_newfstat_ret(&fd, &statbuf);
+#endif
+	return error;'''
+    if old_code in content:
+        content = content.replace(old_code, new_code, 1)
+        print("OK: newfstat_ret hook")
+
+# 4. Hook fstat64 ret
+if 'ksu_handle_fstat64_ret' not in content:
+    old_code = '''SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
+{
+	struct kstat stat;
+	int error = vfs_fstat(fd, &stat);
+
+	if (!error)
+		error = cp_new_stat64(&stat, statbuf);
+
+	return error;'''
+    new_code = '''SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
+{
+	struct kstat stat;
+	int error = vfs_fstat(fd, &stat);
+
+	if (!error)
+		error = cp_new_stat64(&stat, statbuf);
+
+#ifdef CONFIG_KSU_MANUAL_HOOK
+	ksu_handle_fstat64_ret(&fd, &statbuf);
+#endif
+	return error;'''
+    if old_code in content:
+        content = content.replace(old_code, new_code, 1)
+        print("OK: fstat64_ret hook")
+    else:
+        pattern = r'(SYSCALL_DEFINE2\(fstat64.*?return error;\n)'
+        replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_fstat64_ret(&fd, &statbuf);\n#endif\n'
+        content = re.sub(pattern, replacement, content, count=1)
+        print("OK: fstat64_ret hook (alternatif)")
+
 with open('fs/stat.c', 'w') as f:
     f.write(content)
 PYEOF
-  python3 /tmp/hook_stat.py
-else
-  echo "Hook stat déjà présent"
+  python3 /tmp/hook_stat_complete.py
 fi
 
 echo "=== Configuration ==="
