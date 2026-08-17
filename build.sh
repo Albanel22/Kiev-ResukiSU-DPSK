@@ -33,50 +33,176 @@ cd kernel_sources
 echo "=== Intégration de ReSukiSU (méthode officielle) ==="
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-echo "=== Vérification ==="
-echo "Contenu de drivers/kernelsu:"
+echo "=== Vérification de l'intégration ==="
 ls -la drivers/kernelsu/
 
-if [ -f "drivers/kernelsu/Kconfig" ]; then
-  echo "OK: Kconfig présent"
+# Vérifier si les hooks sont déjà appliqués
+if grep -q "ksu_handle" fs/exec.c; then
+  echo "OK: Hooks déjà appliqués par setup.sh"
 else
-  echo "ERREUR: Kconfig absent"
-  exit 1
-fi
-
-# Modifier le Makefile du kernel (si setup.sh ne l'a pas fait)
-if ! grep -q "kernelsu" drivers/Makefile; then
-  echo "obj-y += kernelsu/" >> drivers/Makefile
-  echo "OK: Makefile modifié"
-else
-  echo "OK: Makefile déjà modifié par setup.sh"
-fi
-
-# Modifier le Kconfig du kernel (si setup.sh ne l'a pas fait)
-if ! grep -q "kernelsu" drivers/Kconfig; then
-  echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-  echo "OK: Kconfig modifié"
-else
-  echo "OK: Kconfig déjà modifié par setup.sh"
-fi
-
-# Modifier fs/exec.c pour les hooks manuels
-if ! grep -q "handle_kernelsu" fs/exec.c; then
-  sed -i '/#include <linux\/fs.h>/a extern int handle_kernelsu(int argc, char *argv[]);' fs/exec.c
-  cat > /tmp/patch_exec.py << 'PYEOF'
+  echo "=== Application des hooks manuels pour kernel 4.19 ==="
+  
+  # 1. Hook execve dans fs/exec.c
+  cat > /tmp/hook_exec.py << 'PYEOF'
 import re
+
 with open('fs/exec.c', 'r') as f:
     content = f.read()
-pattern = r'(static int do_execveat_common\(.*?\{)'
-replacement = r'\1\n\tif (unlikely(handle_kernelsu(argc, argv))) {\n\t\treturn 0;\n\t}'
-content = re.sub(pattern, replacement, content, count=1)
+
+# Ajouter l'extern
+if 'ksu_handle_execveat' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
+__attribute__((hot))
+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
+				void *argv, void *envp, int *flags);
+#endif
+'''
+    # Ajouter après do_execveat_common
+    pattern = r'(static int do_execveat_common\(.*?\n\}\n)'
+    replacement = r'\1' + extern_decl
+    content = re.sub(pattern, replacement, content, count=1)
+
+# Hook do_execve
+if 'ksu_handle_execveat((int *)AT_FDCWD' not in content:
+    pattern = r'(int do_execve\(struct filename \*filename,.*?\{.*?struct user_arg_ptr envp = \{ \.ptr\.native = __envp \};\n)'
+    replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n'
+    content = re.sub(pattern, replacement, content, count=1)
+
 with open('fs/exec.c', 'w') as f:
     f.write(content)
+print("OK: fs/exec.c hooké")
 PYEOF
-  python3 /tmp/patch_exec.py
-  echo "OK: fs/exec.c modifié"
-else
-  echo "OK: fs/exec.c déjà modifié"
+  python3 /tmp/hook_exec.py
+
+  # 2. Hook stat dans fs/stat.c
+  cat > /tmp/hook_stat.py << 'PYEOF'
+import re
+
+with open('fs/stat.c', 'r') as f:
+    content = f.read()
+
+# Ajouter les externs
+if 'ksu_handle_stat' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
+__attribute__((hot)) 
+extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
+				int *flags);
+extern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);
+#endif
+'''
+    # Ajouter avant newfstatat
+    pattern = r'(SYSCALL_DEFINE4\(newfstatat)'
+    replacement = extern_decl + r'\n\1'
+    content = re.sub(pattern, replacement, content, count=1)
+
+# Hook newfstatat
+if 'ksu_handle_stat(&dfd' not in content:
+    pattern = r'(SYSCALL_DEFINE4\(newfstatat.*?struct kstat stat;\n\tint error;\n)'
+    replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n'
+    content = re.sub(pattern, replacement, content, count=1)
+
+# Hook newfstat
+if 'ksu_handle_newfstat_ret' not in content:
+    pattern = r'(SYSCALL_DEFINE2\(newfstat.*?return error;\n)'
+    replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_newfstat_ret(&fd, &statbuf);\n#endif\n'
+    content = re.sub(pattern, replacement, content, count=1)
+
+with open('fs/stat.c', 'w') as f:
+    f.write(content)
+print("OK: fs/stat.c hooké")
+PYEOF
+  python3 /tmp/hook_stat.py
+
+  # 3. Hook faccessat dans fs/open.c
+  cat > /tmp/hook_open.py << 'PYEOF'
+import re
+
+with open('fs/open.c', 'r') as f:
+    content = f.read()
+
+if 'ksu_handle_faccessat' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
+__attribute__((hot)) 
+extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
+				int *mode, int *flags);
+#endif
+'''
+    pattern = r'(SYSCALL_DEFINE3\(faccessat)'
+    replacement = extern_decl + r'\n\1'
+    content = re.sub(pattern, replacement, content, count=1)
+    
+    pattern = r'(SYSCALL_DEFINE3\(faccessat.*?\{)'
+    replacement = r'\1\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n'
+    content = re.sub(pattern, replacement, content, count=1)
+
+with open('fs/open.c', 'w') as f:
+    f.write(content)
+print("OK: fs/open.c hooké")
+PYEOF
+  python3 /tmp/hook_open.py
+
+  # 4. Hook reboot dans kernel/reboot.c
+  if [ -f "kernel/reboot.c" ]; then
+    cat > /tmp/hook_reboot.py << 'PYEOF'
+import re
+
+with open('kernel/reboot.c', 'r') as f:
+    content = f.read()
+
+if 'ksu_handle_sys_reboot' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
+extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
+#endif
+'''
+    pattern = r'(SYSCALL_DEFINE4\(reboot)'
+    replacement = extern_decl + r'\n\1'
+    content = re.sub(pattern, replacement, content, count=1)
+    
+    pattern = r'(SYSCALL_DEFINE4\(reboot.*?int ret = 0;\n)'
+    replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif\n'
+    content = re.sub(pattern, replacement, content, count=1)
+
+with open('kernel/reboot.c', 'w') as f:
+    f.write(content)
+print("OK: kernel/reboot.c hooké")
+PYEOF
+    python3 /tmp/hook_reboot.py
+  fi
+
+  # 5. Hook read dans fs/read_write.c
+  cat > /tmp/hook_read.py << 'PYEOF'
+import re
+
+with open('fs/read_write.c', 'r') as f:
+    content = f.read()
+
+if 'ksu_handle_sys_read' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
+extern bool ksu_init_rc_hook __read_mostly;
+extern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd,
+				char __user **buf_ptr, size_t *count_ptr);
+#endif
+'''
+    pattern = r'(SYSCALL_DEFINE3\(read)'
+    replacement = extern_decl + r'\n\1'
+    content = re.sub(pattern, replacement, content, count=1)
+    
+    pattern = r'(SYSCALL_DEFINE3\(read.*?\{)'
+    replacement = r'\1\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tif (unlikely(ksu_init_rc_hook))\n\t\tksu_handle_sys_read(fd, &buf, &count);\n#endif\n'
+    content = re.sub(pattern, replacement, content, count=1)
+
+with open('fs/read_write.c', 'w') as f:
+    f.write(content)
+print("OK: fs/read_write.c hooké")
+PYEOF
+  python3 /tmp/hook_read.py
+
+  echo "=== Hooks manuels appliqués ==="
 fi
 
 echo "=== Configuration du kernel ==="
@@ -94,6 +220,7 @@ echo "Config: $CONFIG"
 # Activer ReSukiSU selon la documentation officielle
 ./scripts/config --enable KSU
 ./scripts/config --enable KSU_MANUAL_HOOK
+./scripts/config --enable KALLSYMS_ALL
 ./scripts/config --enable KPROBES
 ./scripts/config --enable HAVE_KPROBES
 ./scripts/config --enable KPROBE_EVENTS
@@ -102,7 +229,7 @@ make ARCH=arm64 olddefconfig
 
 echo "=== Vérification des configs ==="
 grep "CONFIG_KSU" .config
-grep "CONFIG_KPROBES" .config
+grep "CONFIG_KALLSYMS_ALL" .config
 
 echo "=== Compilation ==="
 export ARCH=arm64
