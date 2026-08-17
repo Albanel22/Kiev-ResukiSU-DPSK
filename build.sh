@@ -231,9 +231,11 @@ fi
 
 echo "=== Configuration du kernel ==="
 
-# Nettoyage COMPLET (y compris le répertoire out)
-make mrproper
+echo "Suppression du répertoire out..."
 rm -rf out
+
+echo "Nettoyage de la source..."
+make mrproper
 
 CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*sm8250*" | head -1)
 if [ -z "$CONFIG" ]; then
@@ -249,8 +251,7 @@ echo "Config: $CONFIG"
 ./scripts/config --enable KPROBES
 ./scripts/config --enable HAVE_KPROBES
 ./scripts/config --enable KPROBE_EVENTS
-
-./scripts/config --enable KALLSYMS_ALL 2>/dev/null || echo "KALLSYMS_ALL non disponible, ignoré"
+./scripts/config --enable KALLSYMS_ALL 2>/dev/null || echo "KALLSYMS_ALL ignoré"
 
 make ARCH=arm64 olddefconfig
 
