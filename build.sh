@@ -7,17 +7,26 @@ sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 sudo apt-get clean
 
 sudo apt-get update
-sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python3-pip libelf-dev dwarves cpio automake autoconf gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi mkbootimg
+sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python3-pip libelf-dev dwarves cpio automake autoconf mkbootimg
 
-mkdir -p /home/runner/gcc-64/bin /home/runner/gcc-32/bin
-for tool in gcc ar nm objcopy objdump strip ld ld.bfd; do
-  if [ -f "/usr/bin/aarch64-linux-gnu-$tool" ]; then
-    ln -sf /usr/bin/aarch64-linux-gnu-$tool /home/runner/gcc-64/bin/aarch64-linux-android-$tool
-  fi
-  if [ -f "/usr/bin/arm-linux-gnueabi-$tool" ]; then
-    ln -sf /usr/bin/arm-linux-gnueabi-$tool /home/runner/gcc-32/bin/arm-linux-androideabi-$tool
-  fi
-done
+echo "=== Téléchargement du GCC Android 4.9 ==="
+mkdir -p /home/runner/gcc-arm64 /home/runner/gcc-arm32
+
+# GCC 64-bit (aarch64)
+cd /home/runner/gcc-arm64
+wget -q "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/android13-release.tar.gz" -O gcc64.tar.gz
+tar -xzf gcc64.tar.gz
+rm gcc64.tar.gz
+
+# GCC 32-bit (arm)
+cd /home/runner/gcc-arm32
+wget -q "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/android13-release.tar.gz" -O gcc32.tar.gz
+tar -xzf gcc32.tar.gz
+rm gcc32.tar.gz
+
+echo "=== Vérification GCC ==="
+ls /home/runner/gcc-arm64/bin/ | head -10
+ls /home/runner/gcc-arm32/bin/ | head -10
 
 cd $GITHUB_WORKSPACE
 
@@ -28,13 +37,9 @@ cd kernel_sources
 echo "=== Intégration de ReSukiSU ==="
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-if grep -q "ksu_handle_execveat" fs/exec.c && grep -q "ksu_input_hook" drivers/input/input.c; then
-  echo "OK: Hooks déjà appliqués"
-else
-  echo "=== Application des hooks manuels ==="
-  
-  if ! grep -q "ksu_handle_execveat" fs/exec.c; then
-    cat > /tmp/hook_exec.py << 'PYEOF'
+echo "=== Application des hooks ==="
+if ! grep -q "ksu_handle_execveat" fs/exec.c; then
+  cat > /tmp/hook_exec.py << 'PYEOF'
 import re
 with open('fs/exec.c', 'r') as f:
     content = f.read()
@@ -57,11 +62,11 @@ with open('fs/exec.c', 'w') as f:
     f.write(content)
 print("OK: fs/exec.c")
 PYEOF
-    python3 /tmp/hook_exec.py
-  fi
+  python3 /tmp/hook_exec.py
+fi
 
-  if ! grep -q "ksu_handle_stat" fs/stat.c; then
-    cat > /tmp/hook_stat.py << 'PYEOF'
+if ! grep -q "ksu_handle_stat" fs/stat.c; then
+  cat > /tmp/hook_stat.py << 'PYEOF'
 import re
 with open('fs/stat.c', 'r') as f:
     content = f.read()
@@ -89,11 +94,11 @@ with open('fs/stat.c', 'w') as f:
     f.write(content)
 print("OK: fs/stat.c")
 PYEOF
-    python3 /tmp/hook_stat.py
-  fi
+  python3 /tmp/hook_stat.py
+fi
 
-  if ! grep -q "ksu_handle_faccessat" fs/open.c; then
-    cat > /tmp/hook_open.py << 'PYEOF'
+if ! grep -q "ksu_handle_faccessat" fs/open.c; then
+  cat > /tmp/hook_open.py << 'PYEOF'
 import re
 with open('fs/open.c', 'r') as f:
     content = f.read()
@@ -115,11 +120,11 @@ with open('fs/open.c', 'w') as f:
     f.write(content)
 print("OK: fs/open.c")
 PYEOF
-    python3 /tmp/hook_open.py
-  fi
+  python3 /tmp/hook_open.py
+fi
 
-  if [ -f "kernel/reboot.c" ] && ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
-    cat > /tmp/hook_reboot.py << 'PYEOF'
+if [ -f "kernel/reboot.c" ] && ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
+  cat > /tmp/hook_reboot.py << 'PYEOF'
 import re
 with open('kernel/reboot.c', 'r') as f:
     content = f.read()
@@ -139,11 +144,11 @@ with open('kernel/reboot.c', 'w') as f:
     f.write(content)
 print("OK: kernel/reboot.c")
 PYEOF
-    python3 /tmp/hook_reboot.py
-  fi
+  python3 /tmp/hook_reboot.py
+fi
 
-  if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
-    cat > /tmp/hook_read.py << 'PYEOF'
+if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
+  cat > /tmp/hook_read.py << 'PYEOF'
 import re
 with open('fs/read_write.c', 'r') as f:
     content = f.read()
@@ -165,11 +170,11 @@ with open('fs/read_write.c', 'w') as f:
     f.write(content)
 print("OK: fs/read_write.c")
 PYEOF
-    python3 /tmp/hook_read.py
-  fi
+  python3 /tmp/hook_read.py
+fi
 
-  if ! grep -q "ksu_input_hook" drivers/input/input.c; then
-    cat > /tmp/hook_input.py << 'PYEOF'
+if ! grep -q "ksu_input_hook" drivers/input/input.c; then
+  cat > /tmp/hook_input.py << 'PYEOF'
 import re
 with open('drivers/input/input.c', 'r') as f:
     content = f.read()
@@ -191,11 +196,11 @@ with open('drivers/input/input.c', 'w') as f:
     f.write(content)
 print("OK: drivers/input/input.c")
 PYEOF
-    python3 /tmp/hook_input.py
-  fi
+  python3 /tmp/hook_input.py
+fi
 
-  if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
-    cat > /tmp/hook_setuid.py << 'PYEOF'
+if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
+  cat > /tmp/hook_setuid.py << 'PYEOF'
 import re
 with open('kernel/sys.c', 'r') as f:
     content = f.read()
@@ -215,34 +220,29 @@ with open('kernel/sys.c', 'w') as f:
     f.write(content)
 print("OK: kernel/sys.c")
 PYEOF
-    python3 /tmp/hook_setuid.py
-  fi
-
-  echo "=== Hooks terminés ==="
+  python3 /tmp/hook_setuid.py
 fi
 
 echo "=== Configuration ==="
 make mrproper 2>/dev/null || true
-rm -rf out
 
-CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*sm8250*" | head -1)
+CONFIG=$(find arch/arm64/configs/ -name "*kiev*" | head -1)
+if [ -z "$CONFIG" ]; then
+  CONFIG=$(find arch/arm64/configs/ -name "*sm8250*" | head -1)
+fi
+
 cp "$CONFIG" .config
 echo "Config: $CONFIG"
 
 ./scripts/config --enable KSU
 ./scripts/config --enable KSU_MANUAL_HOOK
-./scripts/config --enable KPROBES
-./scripts/config --enable HAVE_KPROBES
-./scripts/config --enable KPROBE_EVENTS
-./scripts/config --enable COMPAT
-./scripts/config --enable COMPAT_32BIT_TIME
 
 make ARCH=arm64 olddefconfig
 
-echo "=== Compilation avec GCC ==="
+echo "=== Compilation avec GCC Android 4.9 ==="
 export ARCH=arm64
 export SUBARCH=arm64
-export PATH="/home/runner/gcc-64/bin:/home/runner/gcc-32/bin:$PATH"
+export PATH="/home/runner/gcc-arm64/bin:/home/runner/gcc-arm32/bin:$PATH"
 export CROSS_COMPILE=aarch64-linux-android-
 export CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
@@ -253,7 +253,8 @@ if [ -f "arch/arm64/boot/Image" ] || [ -f "arch/arm64/boot/Image.gz" ]; then
   ls -lh arch/arm64/boot/
 else
   echo "BUILD FAILED"
-  grep -i "error:" build.log | tail -30
+  echo "=== PREMIÈRES ERREURS ==="
+  grep -i "error:" build.log | head -10
   exit 1
 fi
 
@@ -263,8 +264,6 @@ KERNEL_IMAGE="arch/arm64/boot/Image.gz"
 [ -f "$KERNEL_IMAGE" ] || KERNEL_IMAGE="arch/arm64/boot/Image"
 
 mkbootimg --kernel "$KERNEL_IMAGE" --ramdisk /dev/null --output /home/runner/output/ReSukiSU-boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
-
-echo "boot.img créé"
 
 echo "=== Création du package ==="
 cd /home/runner
