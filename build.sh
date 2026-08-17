@@ -169,6 +169,8 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_KPROBES=y"
   echo "CONFIG_HAVE_KPROBES=y"
   echo "CONFIG_KRETPROBES=y"
+  echo "CONFIG_COMPAT=y"
+  echo "CONFIG_COMPAT_32BIT_TIME=y"
   echo "# CONFIG_COMPAT_VDSO is not set"
   echo "# CONFIG_VDSO32 is not set"
   echo "# CONFIG_VDSO_COMPAT is not set"
@@ -176,7 +178,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-echo "=== Vérification VDSO32 ==="
+echo "=== Vérification des configs ==="
+grep "CONFIG_KSU=" out/.config
+grep "CONFIG_COMPAT=" out/.config
 grep "CONFIG_COMPAT_VDSO" out/.config || echo "COMPAT_VDSO désactivé"
 grep "CONFIG_VDSO32" out/.config || echo "VDSO32 désactivé"
 
