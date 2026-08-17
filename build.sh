@@ -19,133 +19,249 @@ echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-echo "=== Injection des hooks CORRECTS pour kernel 4.19 ==="
+echo "=== Injection des hooks ==="
 python3 << 'PYEOF'
 import re, os
 
-def inject(path, declaration, call, search_pattern):
-    if not os.path.exists(path):
-        print(f"Fichier introuvable: {path}")
-        return
-    with open(path, 'r') as f:
-        content = f.read()
-    
-    if call.strip().split('\n')[0] in content:
-        print(f"Déjà injecté: {path}")
-        return
-    
-    match = re.search(search_pattern, content)
-    if match:
-        content = content[:match.start()] + declaration + "\n" + content[match.start():]
-        brace_pos = content.find('{', match.start())
-        if brace_pos != -1:
-            content = content[:brace_pos+1] + "\n" + call + content[brace_pos+1:]
-        with open(path, 'w') as f:
-            f.write(content)
-        print(f"Injecté: {path}")
-    else:
-        print(f"Pattern non trouvé dans {path}")
+# === Hook 1: fs/exec.c - CORRIGÉ ===
+with open('fs/exec.c', 'r') as f:
+    content = f.read()
 
-inject(
-    "fs/exec.c",
-    """#ifdef CONFIG_KSU_MANUAL_HOOK
+if 'ksu_handle_execveat' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
 __attribute__((hot))
 extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
 				void *argv, void *envp, int *flags);
-#endif""",
-    """#ifdef CONFIG_KSU_MANUAL_HOOK
+#endif
+'''
+    pattern = r'int do_execve\(struct filename \*filename,'
+    content = content.replace(pattern, extern_decl + '\n' + pattern, 1)
+    
+    old_code = '''	struct user_arg_ptr argv = { .ptr.native = __argv };
+	struct user_arg_ptr envp = { .ptr.native = __envp };
+	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);'''
+    
+    new_code = '''	struct user_arg_ptr argv = { .ptr.native = __argv };
+	struct user_arg_ptr envp = { .ptr.native = __envp };
+#ifdef CONFIG_KSU_MANUAL_HOOK
 	ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);
-#endif""",
-    r'int do_execve\(struct filename \*filename,\n\tconst char __user \*const __user \*__argv,\n\tconst char __user \*const __user \*__envp\)\n\{'
-)
+#endif
+	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);'''
+    
+    content = content.replace(old_code, new_code, 1)
+    
+    with open('fs/exec.c', 'w') as f:
+        f.write(content)
+    print("OK: fs/exec.c")
+else:
+    print("Déjà injecté: fs/exec.c")
 
-inject(
-    "fs/stat.c",
-    """#ifdef CONFIG_KSU_MANUAL_HOOK
+# === Hook 2: fs/stat.c ===
+with open('fs/stat.c', 'r') as f:
+    content = f.read()
+
+if 'ksu_handle_stat' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
 __attribute__((hot))
 extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
 				int *flags);
 extern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);
-#endif""",
-    """#ifdef CONFIG_KSU_MANUAL_HOOK
+#endif
+'''
+    pattern = r'SYSCALL_DEFINE4\(newfstatat'
+    content = content.replace(pattern, extern_decl + '\n' + pattern, 1)
+    
+    old_code = '''	struct kstat stat;
+	int error;
+
+	return vfs_fstatat(dfd, filename, &stat, flag);'''
+    
+    new_code = '''	struct kstat stat;
+	int error;
+
+#ifdef CONFIG_KSU_MANUAL_HOOK
 	ksu_handle_stat(&dfd, &filename, &flag);
-#endif""",
-    r'SYSCALL_DEFINE4\(newfstatat, int, dfd, const char __user \*, filename,\n\t\tstruct stat __user \*, statbuf, int, flag\)\n\{'
-)
+#endif
+	return vfs_fstatat(dfd, filename, &stat, flag);'''
+    
+    content = content.replace(old_code, new_code, 1)
+    
+    with open('fs/stat.c', 'w') as f:
+        f.write(content)
+    print("OK: fs/stat.c")
+else:
+    print("Déjà injecté: fs/stat.c")
 
-inject(
-    "fs/stat.c",
-    """#ifdef CONFIG_KSU_MANUAL_HOOK
-extern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);
-#endif""",
-    """#ifdef CONFIG_KSU_MANUAL_HOOK
-	ksu_handle_newfstat_ret(&fd, &statbuf);
-#endif""",
-    r'SYSCALL_DEFINE2\(newfstat, unsigned int, fd, struct stat __user \*, statbuf\)\n\{'
-)
+# === Hook 3: fs/open.c ===
+with open('fs/open.c', 'r') as f:
+    content = f.read()
 
-inject(
-    "fs/open.c",
-    """#ifdef CONFIG_KSU_MANUAL_HOOK
+if 'ksu_handle_faccessat' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
 __attribute__((hot))
 extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
 				int *mode, int *flags);
-#endif""",
-    """#ifdef CONFIG_KSU_MANUAL_HOOK
+#endif
+'''
+    pattern = r'SYSCALL_DEFINE3\(faccessat'
+    content = content.replace(pattern, extern_decl + '\n' + pattern, 1)
+    
+    old_code = '''SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
+{
+	return do_faccessat(dfd, filename, mode);'''
+    
+    new_code = '''SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
+{
+#ifdef CONFIG_KSU_MANUAL_HOOK
 	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
-#endif""",
-    r'SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\n\{'
-)
+#endif
+	return do_faccessat(dfd, filename, mode);'''
+    
+    content = content.replace(old_code, new_code, 1)
+    
+    with open('fs/open.c', 'w') as f:
+        f.write(content)
+    print("OK: fs/open.c")
+else:
+    print("Déjà injecté: fs/open.c")
 
-inject(
-    "fs/read_write.c",
-    """#ifdef CONFIG_KSU_MANUAL_HOOK
+# === Hook 4: fs/read_write.c ===
+with open('fs/read_write.c', 'r') as f:
+    content = f.read()
+
+if 'ksu_handle_sys_read' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
 extern bool ksu_init_rc_hook __read_mostly;
 extern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd,
 				char __user **buf_ptr, size_t *count_ptr);
-#endif""",
-    """#ifdef CONFIG_KSU_MANUAL_HOOK
+#endif
+'''
+    pattern = r'SYSCALL_DEFINE3\(read'
+    content = content.replace(pattern, extern_decl + '\n' + pattern, 1)
+    
+    old_code = '''SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+{
+	return ksys_read(fd, buf, count);'''
+    
+    new_code = '''SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+{
+#ifdef CONFIG_KSU_MANUAL_HOOK
 	if (unlikely(ksu_init_rc_hook))
 		ksu_handle_sys_read(fd, &buf, &count);
-#endif""",
-    r'SYSCALL_DEFINE3\(read, unsigned int, fd, char __user \*, buf, size_t, count\)\n\{'
-)
+#endif
+	return ksys_read(fd, buf, count);'''
+    
+    content = content.replace(old_code, new_code, 1)
+    
+    with open('fs/read_write.c', 'w') as f:
+        f.write(content)
+    print("OK: fs/read_write.c")
+else:
+    print("Déjà injecté: fs/read_write.c")
 
-inject(
-    "drivers/input/input.c",
-    """#ifdef CONFIG_KSU_MANUAL_HOOK
+# === Hook 5: drivers/input/input.c ===
+with open('drivers/input/input.c', 'r') as f:
+    content = f.read()
+
+if 'ksu_input_hook' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
 extern bool ksu_input_hook __read_mostly;
 extern __attribute__((cold)) int ksu_handle_input_handle_event(
 			unsigned int *type, unsigned int *code, int *value);
-#endif""",
-    """#ifdef CONFIG_KSU_MANUAL_HOOK
+#endif
+'''
+    pattern = r'void input_event\(struct input_dev \*dev,'
+    content = content.replace(pattern, extern_decl + '\n' + pattern, 1)
+    
+    old_code = '''void input_event(struct input_dev *dev,
+		 unsigned int type, unsigned int code, int value)
+{
+	unsigned long flags;'''
+    
+    new_code = '''void input_event(struct input_dev *dev,
+		 unsigned int type, unsigned int code, int value)
+{
+	unsigned long flags;
+
+#ifdef CONFIG_KSU_MANUAL_HOOK
 	if (unlikely(ksu_input_hook))
 		ksu_handle_input_handle_event(&type, &code, &value);
-#endif""",
-    r'void input_event\(struct input_dev \*dev,\n\t\t unsigned int type, unsigned int code, int value\)\n\{'
-)
+#endif'''
+    
+    content = content.replace(old_code, new_code, 1)
+    
+    with open('drivers/input/input.c', 'w') as f:
+        f.write(content)
+    print("OK: drivers/input/input.c")
+else:
+    print("Déjà injecté: drivers/input/input.c")
 
-inject(
-    "kernel/reboot.c",
-    """#ifdef CONFIG_KSU_MANUAL_HOOK
+# === Hook 6: kernel/reboot.c ===
+with open('kernel/reboot.c', 'r') as f:
+    content = f.read()
+
+if 'ksu_handle_sys_reboot' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
 extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
-#endif""",
-    """#ifdef CONFIG_KSU_MANUAL_HOOK
-	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
-#endif""",
-    r'SYSCALL_DEFINE4\(reboot, int, magic1, int, magic2, unsigned int, cmd,\n\t\tvoid __user \*, arg\)\n\{'
-)
+#endif
+'''
+    pattern = r'SYSCALL_DEFINE4\(reboot'
+    content = content.replace(pattern, extern_decl + '\n' + pattern, 1)
+    
+    old_code = '''	char buffer[256];
+	int ret = 0;'''
+    
+    new_code = '''	char buffer[256];
+	int ret = 0;
 
-inject(
-    "kernel/sys.c",
-    """#ifdef CONFIG_KSU_MANUAL_HOOK
+#ifdef CONFIG_KSU_MANUAL_HOOK
+	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
+#endif'''
+    
+    content = content.replace(old_code, new_code, 1)
+    
+    with open('kernel/reboot.c', 'w') as f:
+        f.write(content)
+    print("OK: kernel/reboot.c")
+else:
+    print("Déjà injecté: kernel/reboot.c")
+
+# === Hook 7: kernel/sys.c ===
+with open('kernel/sys.c', 'r') as f:
+    content = f.read()
+
+if 'ksu_handle_setresuid' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
 extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
-#endif""",
-    """#ifdef CONFIG_KSU_MANUAL_HOOK
+#endif
+'''
+    pattern = r'long __sys_setresuid\(uid_t ruid'
+    content = content.replace(pattern, extern_decl + '\n' + pattern, 1)
+    
+    old_code = '''	kuid_t kruid, keuid, ksuid;
+	bool ruid_new, euid_new, suid_new;'''
+    
+    new_code = '''	kuid_t kruid, keuid, ksuid;
+	bool ruid_new, euid_new, suid_new;
+
+#ifdef CONFIG_KSU_MANUAL_HOOK
 	(void)ksu_handle_setresuid(ruid, euid, suid);
-#endif""",
-    r'long __sys_setresuid\(uid_t ruid, uid_t euid, uid_t suid\)\n\{'
-)
+#endif'''
+    
+    content = content.replace(old_code, new_code, 1)
+    
+    with open('kernel/sys.c', 'w') as f:
+        f.write(content)
+    print("OK: kernel/sys.c")
+else:
+    print("Déjà injecté: kernel/sys.c")
 
 print("=== Tous les hooks injectés correctement ===")
 PYEOF
@@ -177,12 +293,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 } >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
-
-echo "=== Vérification des configs ==="
-grep "CONFIG_KSU=" out/.config
-grep "CONFIG_COMPAT=" out/.config
-grep "CONFIG_COMPAT_VDSO" out/.config || echo "COMPAT_VDSO désactivé"
-grep "CONFIG_VDSO32" out/.config || echo "VDSO32 désactivé"
 
 echo "=== Compilation ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
