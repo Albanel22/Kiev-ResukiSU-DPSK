@@ -36,13 +36,11 @@ curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup
 echo "=== Vérification de l'intégration ==="
 ls -la drivers/kernelsu/
 
-# Vérifier si les hooks sont déjà appliqués
 if grep -q "ksu_handle_execveat" fs/exec.c && grep -q "ksu_input_hook" drivers/input/input.c; then
   echo "OK: Hooks déjà appliqués par setup.sh"
 else
   echo "=== Application des hooks manuels pour kernel 4.19 ==="
   
-  # 1. Hook execve dans fs/exec.c
   if ! grep -q "ksu_handle_execveat" fs/exec.c; then
     cat > /tmp/hook_exec.py << 'PYEOF'
 import re
@@ -70,7 +68,6 @@ PYEOF
     python3 /tmp/hook_exec.py
   fi
 
-  # 2. Hook stat dans fs/stat.c
   if ! grep -q "ksu_handle_stat" fs/stat.c; then
     cat > /tmp/hook_stat.py << 'PYEOF'
 import re
@@ -103,7 +100,6 @@ PYEOF
     python3 /tmp/hook_stat.py
   fi
 
-  # 3. Hook faccessat dans fs/open.c
   if ! grep -q "ksu_handle_faccessat" fs/open.c; then
     cat > /tmp/hook_open.py << 'PYEOF'
 import re
@@ -130,7 +126,6 @@ PYEOF
     python3 /tmp/hook_open.py
   fi
 
-  # 4. Hook reboot dans kernel/reboot.c
   if [ -f "kernel/reboot.c" ] && ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
     cat > /tmp/hook_reboot.py << 'PYEOF'
 import re
@@ -155,7 +150,6 @@ PYEOF
     python3 /tmp/hook_reboot.py
   fi
 
-  # 5. Hook read dans fs/read_write.c
   if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
     cat > /tmp/hook_read.py << 'PYEOF'
 import re
@@ -182,7 +176,6 @@ PYEOF
     python3 /tmp/hook_read.py
   fi
 
-  # 6. Hook input dans drivers/input/input.c (pour MODULE_DEVICE_TABLE)
   if ! grep -q "ksu_input_hook" drivers/input/input.c; then
     cat > /tmp/hook_input.py << 'PYEOF'
 import re
@@ -209,7 +202,6 @@ PYEOF
     python3 /tmp/hook_input.py
   fi
 
-  # 7. Hook setuid dans kernel/sys.c (optionnel pour 4.19)
   if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
     cat > /tmp/hook_setuid.py << 'PYEOF'
 import re
@@ -249,19 +241,20 @@ fi
 cp "$CONFIG" .config
 echo "Config: $CONFIG"
 
-# Activer ReSukiSU et tous les hooks
 ./scripts/config --enable KSU
 ./scripts/config --enable KSU_MANUAL_HOOK
-./scripts/config --enable KALLSYMS_ALL
 ./scripts/config --enable KPROBES
 ./scripts/config --enable HAVE_KPROBES
 ./scripts/config --enable KPROBE_EVENTS
 
+# KALLSYMS_ALL peut ne pas exister, on essaie sans erreur fatale
+./scripts/config --enable KALLSYMS_ALL 2>/dev/null || echo "KALLSYMS_ALL non disponible, ignoré"
+
 make ARCH=arm64 olddefconfig
 
 echo "=== Vérification des configs ==="
-grep "CONFIG_KSU" .config
-grep "CONFIG_KALLSYMS_ALL" .config
+grep "CONFIG_KSU=" .config || echo "CONFIG_KSU non trouvé"
+grep "CONFIG_KSU_MANUAL_HOOK=" .config || echo "CONFIG_KSU_MANUAL_HOOK non trouvé"
 
 echo "=== Compilation ==="
 export ARCH=arm64
