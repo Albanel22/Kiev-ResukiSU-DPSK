@@ -24,58 +24,46 @@ for tool in gcc ar nm objcopy objdump strip; do
   ln -sf /usr/bin/arm-linux-gnueabi-$tool /home/runner/gcc-32/bin/arm-linux-androideabi-$tool
 done
 
-cd /home/runner/work/*/*/
+cd $GITHUB_WORKSPACE
 
-# === NOUVELLE MÉTHODE : Utiliser git submodule ===
-
-# 1. Cloner le kernel
+echo "=== Clonage du kernel ==="
 git clone --depth=1 --branch lineage-23.2 https://github.com/LineageOS/android_kernel_motorola_sm8250.git kernel_sources
 cd kernel_sources
 
-# 2. Ajouter ReSukiSU comme submodule dans drivers/kernelsu
 echo "=== Ajout de ReSukiSU comme submodule ==="
 
-# Initialiser git si nécessaire
 git init 2>/dev/null || true
 
-# Ajouter le submodule ReSukiSU
 git submodule add https://github.com/ReSukiSU/ReSukiSU.git drivers/kernelsu 2>/dev/null || {
   echo "Submodule add échoué, essai alternatif..."
-  # Alternative : cloner directement dans le bon dossier avec .git
   rm -rf drivers/kernelsu
   git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git drivers/kernelsu
 }
 
-# Initialiser et mettre à jour les submodules
 git submodule update --init --recursive 2>/dev/null || true
 
-# Vérifier que le submodule est en place
 echo "=== Vérification du submodule ==="
 ls -la drivers/kernelsu/
 if [ -d "drivers/kernelsu/.git" ] || [ -f "drivers/kernelsu/.git" ]; then
-  echo "✅ ReSukiSU est un submodule git valide"
+  echo "OK: ReSukiSU est un submodule git valide"
 else
-  echo "⚠️ Le dossier .git n'existe pas, création artificielle..."
-  # Créer un faux .git pour satisfaire le Kbuild
+  echo "Creation du .git artificiel..."
   if [ ! -d "drivers/kernelsu/.git" ]; then
     mkdir -p drivers/kernelsu/.git
     echo "gitdir: ../../.git/modules/drivers/kernelsu" > drivers/kernelsu/.git
   fi
 fi
 
-# 3. Modifier le Makefile du kernel
 if ! grep -q "kernelsu" drivers/Makefile; then
   echo "obj-y += kernelsu/" >> drivers/Makefile
-  echo "✅ Makefile modifié"
+  echo "OK: Makefile modifié"
 fi
 
-# 4. Modifier le Kconfig du kernel
 if ! grep -q "kernelsu" drivers/Kconfig; then
   echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-  echo "✅ Kconfig modifié"
+  echo "OK: Kconfig modifié"
 fi
 
-# 5. Modifier fs/exec.c
 if ! grep -q "handle_kernelsu" fs/exec.c; then
   sed -i '/#include <linux\/fs.h>/a extern int handle_kernelsu(int argc, char *argv[]);' fs/exec.c
   cat > /tmp/patch_exec.py << 'PYEOF'
@@ -89,16 +77,15 @@ with open('fs/exec.c', 'w') as f:
     f.write(content)
 PYEOF
   python3 /tmp/patch_exec.py
-  echo "✅ fs/exec.c modifié"
+  echo "OK: fs/exec.c modifié"
 fi
 
-# 6. Configuration
 echo "=== Configuration du kernel ==="
 make mrproper
 
 CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*sm8250*" | head -1)
 if [ -z "$CONFIG" ]; then
-  echo "❌ Aucune config trouvée"
+  echo "ERREUR: Aucune config trouvée"
   exit 1
 fi
 
@@ -112,7 +99,6 @@ echo "Config: $CONFIG"
 
 make ARCH=arm64 olddefconfig
 
-# 7. Compilation
 echo "=== Compilation ==="
 export ARCH=arm64
 export SUBARCH=arm64
@@ -131,14 +117,13 @@ export STRIP=llvm-strip
 make -j$(nproc) O=out ARCH=arm64 CC=clang 2>&1 | tee build.log
 
 if [ ! -f "out/arch/arm64/boot/Image" ] && [ ! -f "out/arch/arm64/boot/Image.gz" ]; then
-  echo "❌ BUILD FAILED"
+  echo "BUILD FAILED"
   grep -i "error:" build.log | tail -30
   exit 1
 fi
 
-echo "✅ Compilation réussie"
+echo "Compilation réussie"
 
-# 8. Créer boot.img
 echo "=== Création du boot.img ==="
 mkdir -p /home/runner/output
 KERNEL_IMAGE="out/arch/arm64/boot/Image.gz"
@@ -146,9 +131,8 @@ KERNEL_IMAGE="out/arch/arm64/boot/Image.gz"
 
 mkbootimg --kernel "$KERNEL_IMAGE" --ramdisk /dev/null --output /home/runner/output/ReSukiSU-boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 
-echo "✅ boot.img créé"
+echo "boot.img créé"
 
-# 9. Créer package AnyKernel3
 echo "=== Création du package ==="
 cd /home/runner
 git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
