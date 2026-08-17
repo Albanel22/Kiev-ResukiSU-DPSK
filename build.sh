@@ -33,14 +33,15 @@ cd kernel_sources
 echo "=== Clonage de ReSukiSU ==="
 git clone --depth=1 https://github.com/Albanel22/ReSukiSU.git /tmp/ReSukiSU
 
-echo "=== Structure de ReSukiSU ==="
-ls -la /tmp/ReSukiSU/
-echo "=== Contenu du dossier kernel ==="
-ls -la /tmp/ReSukiSU/kernel/
-
 echo "=== Copie des fichiers kernel vers drivers/kernelsu ==="
 mkdir -p drivers/kernelsu
 cp -r /tmp/ReSukiSU/kernel/* drivers/kernelsu/
+
+echo "=== Suppression du dossier .git existant ==="
+rm -rf drivers/kernelsu/.git
+
+echo "=== Création du fichier .git artificiel ==="
+echo "gitdir: ../../.git/modules/drivers/kernelsu" > drivers/kernelsu/.git
 
 echo "=== Vérification ==="
 ls -la drivers/kernelsu/
@@ -48,28 +49,15 @@ ls -la drivers/kernelsu/
 if [ -f "drivers/kernelsu/Kconfig" ]; then
   echo "OK: Kconfig présent"
 else
-  echo "ERREUR: Kconfig toujours absent"
+  echo "ERREUR: Kconfig absent"
   exit 1
 fi
 
-if [ -f "drivers/kernelsu/Makefile" ] || [ -f "drivers/kernelsu/Kbuild" ]; then
-  echo "OK: Makefile/Kbuild présent"
-else
-  echo "Recherche du Makefile..."
-  find /tmp/ReSukiSU/ -name "Makefile" -o -name "Kbuild" | head -5
-  # Copier le Makefile s'il est ailleurs
-  MAKEFILE=$(find /tmp/ReSukiSU/ -name "Makefile" -o -name "Kbuild" | head -1)
-  if [ -n "$MAKEFILE" ]; then
-    cp "$MAKEFILE" drivers/kernelsu/
-    echo "OK: Makefile copié depuis $MAKEFILE"
-  fi
-fi
-
-# Créer le .git artificiel
-if [ ! -d "drivers/kernelsu/.git" ] && [ ! -f "drivers/kernelsu/.git" ]; then
-  mkdir -p drivers/kernelsu/.git
-  echo "gitdir: ../../.git/modules/drivers/kernelsu" > drivers/kernelsu/.git
+if [ -f "drivers/kernelsu/.git" ]; then
   echo "OK: .git artificiel créé"
+else
+  echo "ERREUR: .git non créé"
+  exit 1
 fi
 
 # Modifier le Makefile du kernel
