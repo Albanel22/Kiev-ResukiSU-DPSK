@@ -30,68 +30,37 @@ echo "=== Clonage du kernel ==="
 git clone --depth=1 --branch lineage-23.2 https://github.com/LineageOS/android_kernel_motorola_sm8250.git kernel_sources
 cd kernel_sources
 
-echo "=== Initialisation git ==="
-git init
-
-echo "=== Ajout de ReSukiSU comme submodule (méthode officielle) ==="
-git submodule add https://github.com/ReSukiSU/ReSukiSU.git drivers/kernelsu 2>/dev/null || {
-  echo "Submodule add échoué, essai avec le fork..."
-  git submodule add https://github.com/Albanel22/ReSukiSU.git drivers/kernelsu
-}
-
-echo "=== Initialisation du submodule ==="
-git submodule update --init --recursive
+echo "=== Intégration de ReSukiSU (méthode officielle) ==="
+curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
 echo "=== Vérification ==="
 echo "Contenu de drivers/kernelsu:"
 ls -la drivers/kernelsu/
 
-echo "Vérification du .git:"
-if [ -f "drivers/kernelsu/.git" ]; then
-  echo "OK: .git fichier présent"
-  cat drivers/kernelsu/.git
-elif [ -d "drivers/kernelsu/.git" ]; then
-  echo "OK: .git dossier présent"
-else
-  echo "ERREUR: .git absent"
-  exit 1
-fi
-
-echo "Vérification du Kconfig:"
 if [ -f "drivers/kernelsu/Kconfig" ]; then
   echo "OK: Kconfig présent"
-elif [ -f "drivers/kernelsu/kernel/Kconfig" ]; then
-  echo "Kconfig dans sous-dossier kernel, déplacement..."
-  cp -r drivers/kernelsu/kernel/* drivers/kernelsu/
-  rm -rf drivers/kernelsu/kernel
-  echo "OK: Kconfig déplacé"
 else
-  echo "ERREUR: Kconfig introuvable"
-  find drivers/kernelsu/ -name "Kconfig" | head -5
+  echo "ERREUR: Kconfig absent"
   exit 1
 fi
 
-echo "=== Exécution du setup.sh si présent ==="
-if [ -f "drivers/kernelsu/setup.sh" ]; then
-  echo "setup.sh trouvé, exécution..."
-  cd drivers/kernelsu
-  bash setup.sh
-  cd ../..
-fi
-
-# Modifier le Makefile du kernel
+# Modifier le Makefile du kernel (si setup.sh ne l'a pas fait)
 if ! grep -q "kernelsu" drivers/Makefile; then
   echo "obj-y += kernelsu/" >> drivers/Makefile
   echo "OK: Makefile modifié"
+else
+  echo "OK: Makefile déjà modifié par setup.sh"
 fi
 
-# Modifier le Kconfig du kernel
+# Modifier le Kconfig du kernel (si setup.sh ne l'a pas fait)
 if ! grep -q "kernelsu" drivers/Kconfig; then
   echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
   echo "OK: Kconfig modifié"
+else
+  echo "OK: Kconfig déjà modifié par setup.sh"
 fi
 
-# Modifier fs/exec.c
+# Modifier fs/exec.c pour les hooks manuels
 if ! grep -q "handle_kernelsu" fs/exec.c; then
   sed -i '/#include <linux\/fs.h>/a extern int handle_kernelsu(int argc, char *argv[]);' fs/exec.c
   cat > /tmp/patch_exec.py << 'PYEOF'
@@ -106,6 +75,8 @@ with open('fs/exec.c', 'w') as f:
 PYEOF
   python3 /tmp/patch_exec.py
   echo "OK: fs/exec.c modifié"
+else
+  echo "OK: fs/exec.c déjà modifié"
 fi
 
 echo "=== Configuration du kernel ==="
@@ -120,12 +91,18 @@ fi
 cp "$CONFIG" .config
 echo "Config: $CONFIG"
 
+# Activer ReSukiSU selon la documentation officielle
 ./scripts/config --enable KSU
+./scripts/config --enable KSU_MANUAL_HOOK
 ./scripts/config --enable KPROBES
 ./scripts/config --enable HAVE_KPROBES
 ./scripts/config --enable KPROBE_EVENTS
 
 make ARCH=arm64 olddefconfig
+
+echo "=== Vérification des configs ==="
+grep "CONFIG_KSU" .config
+grep "CONFIG_KPROBES" .config
 
 echo "=== Compilation ==="
 export ARCH=arm64
@@ -161,7 +138,7 @@ mkbootimg --kernel "$KERNEL_IMAGE" --ramdisk /dev/null --output /home/runner/out
 
 echo "boot.img créé"
 
-echo "=== Création du package ==="
+echo "=== Création du package AnyKernel3 ==="
 cd /home/runner
 git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
 cd AnyKernel3
