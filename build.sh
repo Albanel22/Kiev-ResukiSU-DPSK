@@ -234,6 +234,8 @@ echo "Config: $CONFIG"
 ./scripts/config --enable KPROBES
 ./scripts/config --enable HAVE_KPROBES
 ./scripts/config --enable KPROBE_EVENTS
+./scripts/config --enable COMPAT
+./scripts/config --enable COMPAT_32BIT_TIME
 
 make ARCH=arm64 olddefconfig
 
