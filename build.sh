@@ -7,58 +7,71 @@ sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 sudo apt-get clean
 
 sudo apt-get update
-sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python3-pip libelf-dev dwarves cpio automake autoconf mkbootimg
+sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python3-pip libelf-dev dwarves cpio automake autoconf mkbootimg gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
-echo "=== Téléchargement du GCC Android 4.9 (depuis GitHub LineageOS) ==="
-mkdir -p /home/runner/gcc-arm64 /home/runner/gcc-arm32
-
-# GCC 64-bit - depuis GitHub (plus fiable que Google)
-cd /home/runner/gcc-arm64
-echo "Téléchargement GCC 64-bit depuis GitHub..."
-wget -q --timeout=120 "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9/archive/refs/heads/lineage-22.2.tar.gz" -O gcc64.tar.gz
-
-if [ -f "gcc64.tar.gz" ] && [ -s "gcc64.tar.gz" ]; then
-  tar -xzf gcc64.tar.gz
-  DIR=$(ls -d android_prebuilts_gcc* 2>/dev/null | head -1)
-  if [ -n "$DIR" ]; then
-    mv "$DIR"/* .
-    rm -rf "$DIR"
+# Créer les liens symboliques
+mkdir -p /home/runner/gcc-64/bin /home/runner/gcc-32/bin
+for tool in gcc ar nm objcopy objdump strip ld; do
+  if [ -f "/usr/bin/aarch64-linux-gnu-$tool" ]; then
+    ln -sf /usr/bin/aarch64-linux-gnu-$tool /home/runner/gcc-64/bin/aarch64-linux-android-$tool
   fi
-  rm -f gcc64.tar.gz
-  echo "GCC 64-bit installé"
-else
-  echo "ERREUR: Impossible de télécharger GCC 64-bit"
-  exit 1
-fi
-
-# GCC 32-bit
-cd /home/runner/gcc-arm32
-echo "Téléchargement GCC 32-bit depuis GitHub..."
-wget -q --timeout=120 "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9/archive/refs/heads/lineage-22.2.tar.gz" -O gcc32.tar.gz
-
-if [ -f "gcc32.tar.gz" ] && [ -s "gcc32.tar.gz" ]; then
-  tar -xzf gcc32.tar.gz
-  DIR=$(ls -d android_prebuilts_gcc* 2>/dev/null | head -1)
-  if [ -n "$DIR" ]; then
-    mv "$DIR"/* .
-    rm -rf "$DIR"
+  if [ -f "/usr/bin/arm-linux-gnueabi-$tool" ]; then
+    ln -sf /usr/bin/arm-linux-gnueabi-$tool /home/runner/gcc-32/bin/arm-linux-androideabi-$tool
   fi
-  rm -f gcc32.tar.gz
-  echo "GCC 32-bit installé"
-else
-  echo "ERREUR: Impossible de télécharger GCC 32-bit"
-  exit 1
-fi
-
-echo "=== Vérification des GCC ==="
-/home/runner/gcc-arm64/bin/aarch64-linux-android-gcc --version | head -1
-/home/runner/gcc-arm32/bin/arm-linux-androideabi-gcc --version | head -1
+done
 
 cd $GITHUB_WORKSPACE
 
 echo "=== Clonage du kernel ==="
 git clone --depth=1 --branch lineage-23.2 https://github.com/LineageOS/android_kernel_motorola_sm8250.git kernel_sources
 cd kernel_sources
+
+echo "=== Patch de compatibilité GCC 11 pour kernel 4.19 ==="
+# Corriger l'erreur struct rcu_tasks dans tasks.h
+cat > /tmp/fix_rcu_tasks.py << 'PYEOF'
+import re
+
+with open('kernel/rcu/tasks.h', 'r') as f:
+    content = f.read()
+
+# Ajouter la définition de struct rcu_tasks si manquante
+if 'struct rcu_tasks {' not in content:
+    struct_def = '''
+/* Forward declaration for compatibility with newer GCC */
+struct rcu_tasks {
+    raw_spinlock_t cbs_lock;
+    struct rcu_head *cbs_head;
+    struct rcu_head **cbs_tail;
+    struct wait_queue_head cbs_wq;
+    struct task_struct *kthread_ptr;
+    int gp_state;
+    unsigned long gp_jiffies;
+};
+
+'''
+    # Insérer après les includes
+    pattern = r'(#include <linux/rcupdate.h>.*?\n)'
+    replacement = r'\1' + struct_def
+    content = re.sub(pattern, replacement, content, count=1)
+
+# Ajouter les constantes manquantes
+if 'RTGS_PRE_WAIT_GP' not in content:
+    constants = '''
+/* GP states */
+#define RTGS_PRE_WAIT_GP 0
+#define RTGS_WAIT_GP 1
+#define RTGS_POST_GP 2
+
+'''
+    pattern = r'(struct rcu_tasks \{.*?\n\};)'
+    replacement = r'\1\n' + constants
+    content = re.sub(pattern, replacement, content, count=1)
+
+with open('kernel/rcu/tasks.h', 'w') as f:
+    f.write(content)
+print("OK: tasks.h patché")
+PYEOF
+python3 /tmp/fix_rcu_tasks.py
 
 echo "=== Intégration de ReSukiSU ==="
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
@@ -267,16 +280,12 @@ echo "Config: $CONFIG"
 
 make ARCH=arm64 olddefconfig
 
-echo "=== Compilation avec GCC Android 4.9 ==="
+echo "=== Compilation avec GCC système ==="
 export ARCH=arm64
 export SUBARCH=arm64
-export PATH="/home/runner/gcc-arm64/bin:/home/runner/gcc-arm32/bin:$PATH"
+export PATH="/home/runner/gcc-64/bin:/home/runner/gcc-32/bin:$PATH"
 export CROSS_COMPILE=aarch64-linux-android-
 export CROSS_COMPILE_ARM32=arm-linux-androideabi-
-
-# Vérifier que le bon GCC est utilisé
-which aarch64-linux-android-gcc
-aarch64-linux-android-gcc --version | head -1
 
 make -j$(nproc) ARCH=arm64 2>&1 | tee build.log
 
