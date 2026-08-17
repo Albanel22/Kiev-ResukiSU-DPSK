@@ -1,0 +1,19 @@
+name: Build ReSukiSU Kernel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Run build script
+        run: bash build.sh
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReSukiSU-kiev
+          path: output/*
