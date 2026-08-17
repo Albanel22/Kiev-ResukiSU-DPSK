@@ -231,11 +231,9 @@ fi
 
 echo "=== Configuration du kernel ==="
 
-echo "Suppression du répertoire out..."
+# Nettoyage complet
+make mrproper 2>/dev/null || true
 rm -rf out
-
-echo "Nettoyage de la source..."
-make mrproper
 
 CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*sm8250*" | head -1)
 if [ -z "$CONFIG" ]; then
@@ -259,7 +257,7 @@ echo "=== Vérification des configs ==="
 grep "CONFIG_KSU=" .config || echo "CONFIG_KSU non trouvé"
 grep "CONFIG_KSU_MANUAL_HOOK=" .config || echo "CONFIG_KSU_MANUAL_HOOK non trouvé"
 
-echo "=== Compilation ==="
+echo "=== Compilation (sans O=out) ==="
 export ARCH=arm64
 export SUBARCH=arm64
 export PATH="/home/runner/clang/bin:/home/runner/gcc-64/bin:/home/runner/gcc-32/bin:$PATH"
@@ -274,20 +272,21 @@ export OBJCOPY=llvm-objcopy
 export OBJDUMP=llvm-objdump
 export STRIP=llvm-strip
 
-make -j$(nproc) O=out ARCH=arm64 CC=clang 2>&1 | tee build.log
+make -j$(nproc) ARCH=arm64 CC=clang 2>&1 | tee build.log
 
-if [ ! -f "out/arch/arm64/boot/Image" ] && [ ! -f "out/arch/arm64/boot/Image.gz" ]; then
+if [ -f "arch/arm64/boot/Image" ] || [ -f "arch/arm64/boot/Image.gz" ]; then
+  echo "Compilation réussie"
+  ls -lh arch/arm64/boot/
+else
   echo "BUILD FAILED"
   grep -i "error:" build.log | tail -30
   exit 1
 fi
 
-echo "Compilation réussie"
-
 echo "=== Création du boot.img ==="
 mkdir -p /home/runner/output
-KERNEL_IMAGE="out/arch/arm64/boot/Image.gz"
-[ -f "$KERNEL_IMAGE" ] || KERNEL_IMAGE="out/arch/arm64/boot/Image"
+KERNEL_IMAGE="arch/arm64/boot/Image.gz"
+[ -f "$KERNEL_IMAGE" ] || KERNEL_IMAGE="arch/arm64/boot/Image"
 
 mkbootimg --kernel "$KERNEL_IMAGE" --ramdisk /dev/null --output /home/runner/output/ReSukiSU-boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 
