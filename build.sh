@@ -7,7 +7,7 @@ sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 sudo apt-get clean
 
 sudo apt-get update
-sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python3-pip libelf-dev dwarves cpio automake autoconf gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi mkbootimg
+sudo apt-get install -y bc bison build-essential ccache curl flex git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python3-pip libelf-dev dwarves cpio automake autoconf gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang llvm lld mkbootimg
 
 mkdir -p /home/runner/gcc-64/bin /home/runner/gcc-32/bin
 for tool in gcc ar nm objcopy objdump strip ld; do
@@ -232,14 +232,14 @@ echo "Config: $CONFIG"
 
 make ARCH=arm64 olddefconfig
 
-echo "=== Compilation avec GCC ==="
+echo "=== Compilation avec LLVM ==="
 export ARCH=arm64
 export SUBARCH=arm64
 export PATH="/home/runner/gcc-64/bin:/home/runner/gcc-32/bin:$PATH"
 export CROSS_COMPILE=aarch64-linux-android-
 export CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
-make -j$(nproc) ARCH=arm64 2>&1 | tee build.log
+make -j$(nproc) ARCH=arm64 LLVM=1 2>&1 | tee build.log
 
 if [ -f "arch/arm64/boot/Image" ] || [ -f "arch/arm64/boot/Image.gz" ]; then
   echo "Compilation réussie"
