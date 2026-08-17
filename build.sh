@@ -56,8 +56,6 @@ with open('fs/exec.c', 'w') as f:
     f.write(content)
 PYEOF
   python3 /tmp/hook_execveat.py
-else
-  echo "Hook execveat déjà présent"
 fi
 
 echo "=== Injection hook faccessat ==="
@@ -97,11 +95,9 @@ with open('fs/open.c', 'w') as f:
     f.write(content)
 PYEOF
   python3 /tmp/hook_faccessat.py
-else
-  echo "Hook faccessat déjà présent"
 fi
 
-echo "=== Injection hook stat complet (stat + newfstat_ret + fstat64_ret) ==="
+echo "=== Injection hook stat complet ==="
 if ! grep -q "ksu_handle_fstat64_ret" fs/stat.c; then
   cat > /tmp/hook_stat_complete.py << 'PYEOF'
 import re
@@ -109,7 +105,6 @@ import re
 with open('fs/stat.c', 'r') as f:
     content = f.read()
 
-# 1. Déclarations extern
 if 'ksu_handle_stat' not in content:
     extern_decl = '''
 #ifdef CONFIG_KSU_MANUAL_HOOK
@@ -125,7 +120,6 @@ extern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **sta
     pattern = r'(SYSCALL_DEFINE4\(newfstatat)'
     content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
 
-# 2. Hook newfstatat
 if 'ksu_handle_stat(&dfd' not in content:
     old_code = '''	struct kstat stat;
 	int error;
@@ -140,14 +134,13 @@ if 'ksu_handle_stat(&dfd' not in content:
 	return vfs_fstatat(dfd, filename, &stat, flag);'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: stat hook")
+        print("OK: stat")
     else:
         pattern = r'(SYSCALL_DEFINE4\(newfstatat.*?int error;\n)'
         replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n'
         content = re.sub(pattern, replacement, content, count=1)
-        print("OK: stat hook (alternatif)")
+        print("OK: stat (alternatif)")
 
-# 3. Hook newfstat ret
 if 'ksu_handle_newfstat_ret' not in content:
     old_code = '''SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
 {
@@ -172,9 +165,8 @@ if 'ksu_handle_newfstat_ret' not in content:
 	return error;'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: newfstat_ret hook")
+        print("OK: newfstat_ret")
 
-# 4. Hook fstat64 ret
 if 'ksu_handle_fstat64_ret' not in content:
     old_code = '''SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
 {
@@ -199,20 +191,62 @@ if 'ksu_handle_fstat64_ret' not in content:
 	return error;'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: fstat64_ret hook")
+        print("OK: fstat64_ret")
     else:
         pattern = r'(SYSCALL_DEFINE2\(fstat64.*?return error;\n)'
         replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_fstat64_ret(&fd, &statbuf);\n#endif\n'
         content = re.sub(pattern, replacement, content, count=1)
-        print("OK: fstat64_ret hook (alternatif)")
+        print("OK: fstat64_ret (alternatif)")
 
 with open('fs/stat.c', 'w') as f:
     f.write(content)
-print("=== Tous les hooks stat injectés ===")
+print("=== Hooks stat terminés ===")
 PYEOF
   python3 /tmp/hook_stat_complete.py
+fi
+
+echo "=== Injection hook sys_reboot ==="
+if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
+  cat > /tmp/hook_reboot.py << 'PYEOF'
+import re
+
+with open('kernel/reboot.c', 'r') as f:
+    content = f.read()
+
+if 'ksu_handle_sys_reboot' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
+extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
+#endif
+'''
+    pattern = r'(SYSCALL_DEFINE4\(reboot)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    
+    old_code = '''	char buffer[256];
+	int ret = 0;'''
+    
+    new_code = '''	char buffer[256];
+	int ret = 0;
+
+#ifdef CONFIG_KSU_MANUAL_HOOK
+	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
+#endif'''
+    
+    if old_code in content:
+        content = content.replace(old_code, new_code, 1)
+        print("OK: sys_reboot")
+    else:
+        pattern = r'(SYSCALL_DEFINE4\(reboot.*?\n\{)'
+        replacement = r'\1\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif'
+        content = re.sub(pattern, replacement, content, count=1)
+        print("OK: sys_reboot (alternatif)")
+
+with open('kernel/reboot.c', 'w') as f:
+    f.write(content)
+PYEOF
+  python3 /tmp/hook_reboot.py
 else
-  echo "Hooks stat déjà présents"
+  echo "Hook sys_reboot déjà présent"
 fi
 
 echo "=== Configuration ==="
