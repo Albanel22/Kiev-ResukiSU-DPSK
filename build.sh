@@ -19,10 +19,21 @@ if [ ! -d "/home/runner/clang" ]; then
 fi
 
 mkdir -p /home/runner/gcc-64/bin /home/runner/gcc-32/bin
-for tool in gcc ar nm objcopy objdump strip; do
-  ln -sf /usr/bin/aarch64-linux-gnu-$tool /home/runner/gcc-64/bin/aarch64-linux-android-$tool
-  ln -sf /usr/bin/arm-linux-gnueabi-$tool /home/runner/gcc-32/bin/arm-linux-androideabi-$tool
+for tool in gcc ar nm objcopy objdump strip ld ld.bfd ld.gold; do
+  if [ -f "/usr/bin/aarch64-linux-gnu-$tool" ]; then
+    ln -sf /usr/bin/aarch64-linux-gnu-$tool /home/runner/gcc-64/bin/aarch64-linux-android-$tool
+  fi
+  if [ -f "/usr/bin/arm-linux-gnueabi-$tool" ]; then
+    ln -sf /usr/bin/arm-linux-gnueabi-$tool /home/runner/gcc-32/bin/arm-linux-androideabi-$tool
+  fi
 done
+
+# Ajouter ld depuis le répertoire clang (lld)
+if [ -f "/home/runner/clang/bin/ld.lld" ]; then
+  ln -sf /home/runner/clang/bin/ld.lld /home/runner/gcc-64/bin/aarch64-linux-android-ld
+  ln -sf /home/runner/clang/bin/ld.lld /home/runner/gcc-32/bin/arm-linux-androideabi-ld
+  echo "ld.lld lié"
+fi
 
 cd $GITHUB_WORKSPACE
 
@@ -231,7 +242,6 @@ fi
 
 echo "=== Configuration du kernel ==="
 
-# Nettoyage complet
 make mrproper 2>/dev/null || true
 rm -rf out
 
@@ -257,7 +267,7 @@ echo "=== Vérification des configs ==="
 grep "CONFIG_KSU=" .config || echo "CONFIG_KSU non trouvé"
 grep "CONFIG_KSU_MANUAL_HOOK=" .config || echo "CONFIG_KSU_MANUAL_HOOK non trouvé"
 
-echo "=== Compilation (sans O=out) ==="
+echo "=== Compilation ==="
 export ARCH=arm64
 export SUBARCH=arm64
 export PATH="/home/runner/clang/bin:/home/runner/gcc-64/bin:/home/runner/gcc-32/bin:$PATH"
@@ -272,7 +282,7 @@ export OBJCOPY=llvm-objcopy
 export OBJDUMP=llvm-objdump
 export STRIP=llvm-strip
 
-make -j$(nproc) ARCH=arm64 CC=clang 2>&1 | tee build.log
+make -j$(nproc) ARCH=arm64 CC=clang LD=ld.lld 2>&1 | tee build.log
 
 if [ -f "arch/arm64/boot/Image" ] || [ -f "arch/arm64/boot/Image.gz" ]; then
   echo "Compilation réussie"
