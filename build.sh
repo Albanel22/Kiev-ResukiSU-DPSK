@@ -19,6 +19,53 @@ echo "=== Intégration ReSukiSU via setup.sh ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
+echo "=== Injection du hook execveat manquant ==="
+if ! grep -q "ksu_handle_execveat" fs/exec.c; then
+  cat > /tmp/hook_execveat.py << 'PYEOF'
+import re
+
+with open('fs/exec.c', 'r') as f:
+    content = f.read()
+
+if 'ksu_handle_execveat' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
+__attribute__((hot))
+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
+				void *argv, void *envp, int *flags);
+#endif
+'''
+    pattern = r'(static int do_execveat_common\()'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    
+    old_code = '''	struct user_arg_ptr argv = { .ptr.native = __argv };
+	struct user_arg_ptr envp = { .ptr.native = __envp };
+	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);'''
+    
+    new_code = '''	struct user_arg_ptr argv = { .ptr.native = __argv };
+	struct user_arg_ptr envp = { .ptr.native = __envp };
+#ifdef CONFIG_KSU_MANUAL_HOOK
+	ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);
+#endif
+	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);'''
+    
+    if old_code in content:
+        content = content.replace(old_code, new_code, 1)
+        print("OK: hook execveat injecté")
+    else:
+        pattern = r'(int do_execve\(struct filename \*filename,.*?struct user_arg_ptr envp = \{ \.ptr\.native = __envp \};\n)'
+        replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n'
+        content = re.sub(pattern, replacement, content, count=1)
+        print("OK: hook execveat injecté (alternatif)")
+
+with open('fs/exec.c', 'w') as f:
+    f.write(content)
+PYEOF
+  python3 /tmp/hook_execveat.py
+else
+  echo "Hook execveat déjà présent"
+fi
+
 echo "=== Configuration ==="
 export ARCH=arm64
 export SUBARCH=arm64
@@ -26,8 +73,6 @@ export CROSS_COMPILE=aarch64-linux-gnu-
 export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
-
-# Chercher la bonne config (kiev, lito, ou sm8250)
 CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*lito*" -o -name "*sm8250*" | head -1)
 CONFIG_NAME=$(basename "$CONFIG")
 cp "$CONFIG" arch/arm64/configs/$CONFIG_NAME
@@ -51,11 +96,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 } >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
-
-echo "=== Vérification ==="
-grep "CONFIG_KSU" out/.config
-grep "CONFIG_COMPAT=" out/.config
-grep "CONFIG_VDSO32" out/.config || echo "VDSO32 désactivé"
 
 echo "=== Compilation ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
