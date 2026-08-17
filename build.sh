@@ -30,34 +30,53 @@ echo "=== Clonage du kernel ==="
 git clone --depth=1 --branch lineage-23.2 https://github.com/LineageOS/android_kernel_motorola_sm8250.git kernel_sources
 cd kernel_sources
 
-echo "=== Clonage de ReSukiSU ==="
-git clone --depth=1 https://github.com/Albanel22/ReSukiSU.git /tmp/ReSukiSU
+echo "=== Initialisation git ==="
+git init
 
-echo "=== Copie des fichiers kernel vers drivers/kernelsu ==="
-mkdir -p drivers/kernelsu
-cp -r /tmp/ReSukiSU/kernel/* drivers/kernelsu/
+echo "=== Ajout de ReSukiSU comme submodule (méthode officielle) ==="
+git submodule add https://github.com/ReSukiSU/ReSukiSU.git drivers/kernelsu 2>/dev/null || {
+  echo "Submodule add échoué, essai avec le fork..."
+  git submodule add https://github.com/Albanel22/ReSukiSU.git drivers/kernelsu
+}
 
-echo "=== Suppression du dossier .git existant ==="
-rm -rf drivers/kernelsu/.git
-
-echo "=== Création du fichier .git artificiel ==="
-echo "gitdir: ../../.git/modules/drivers/kernelsu" > drivers/kernelsu/.git
+echo "=== Initialisation du submodule ==="
+git submodule update --init --recursive
 
 echo "=== Vérification ==="
+echo "Contenu de drivers/kernelsu:"
 ls -la drivers/kernelsu/
 
-if [ -f "drivers/kernelsu/Kconfig" ]; then
-  echo "OK: Kconfig présent"
+echo "Vérification du .git:"
+if [ -f "drivers/kernelsu/.git" ]; then
+  echo "OK: .git fichier présent"
+  cat drivers/kernelsu/.git
+elif [ -d "drivers/kernelsu/.git" ]; then
+  echo "OK: .git dossier présent"
 else
-  echo "ERREUR: Kconfig absent"
+  echo "ERREUR: .git absent"
   exit 1
 fi
 
-if [ -f "drivers/kernelsu/.git" ]; then
-  echo "OK: .git artificiel créé"
+echo "Vérification du Kconfig:"
+if [ -f "drivers/kernelsu/Kconfig" ]; then
+  echo "OK: Kconfig présent"
+elif [ -f "drivers/kernelsu/kernel/Kconfig" ]; then
+  echo "Kconfig dans sous-dossier kernel, déplacement..."
+  cp -r drivers/kernelsu/kernel/* drivers/kernelsu/
+  rm -rf drivers/kernelsu/kernel
+  echo "OK: Kconfig déplacé"
 else
-  echo "ERREUR: .git non créé"
+  echo "ERREUR: Kconfig introuvable"
+  find drivers/kernelsu/ -name "Kconfig" | head -5
   exit 1
+fi
+
+echo "=== Exécution du setup.sh si présent ==="
+if [ -f "drivers/kernelsu/setup.sh" ]; then
+  echo "setup.sh trouvé, exécution..."
+  cd drivers/kernelsu
+  bash setup.sh
+  cd ../..
 fi
 
 # Modifier le Makefile du kernel
