@@ -230,7 +230,10 @@ PYEOF
 fi
 
 echo "=== Configuration du kernel ==="
+
+# Nettoyage COMPLET (y compris le répertoire out)
 make mrproper
+rm -rf out
 
 CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*sm8250*" | head -1)
 if [ -z "$CONFIG" ]; then
@@ -247,7 +250,6 @@ echo "Config: $CONFIG"
 ./scripts/config --enable HAVE_KPROBES
 ./scripts/config --enable KPROBE_EVENTS
 
-# KALLSYMS_ALL peut ne pas exister, on essaie sans erreur fatale
 ./scripts/config --enable KALLSYMS_ALL 2>/dev/null || echo "KALLSYMS_ALL non disponible, ignoré"
 
 make ARCH=arm64 olddefconfig
