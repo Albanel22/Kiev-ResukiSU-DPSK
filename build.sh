@@ -6,6 +6,11 @@ df -h
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 sudo apt-get clean
 
+# Correction du miroir Ubuntu (Azure est lent)
+echo "=== Correction du miroir Ubuntu ==="
+sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list 2>/dev/null || true
+sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list.d/*.list 2>/dev/null || true
+
 sudo apt-get update
 sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg
 
@@ -247,27 +252,17 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
-echo "=== Patch tactile Motorola ==="
-cat >> techpack/display/msm/msm_drv.c << 'EOF'
+echo "=== Patch signatures modules + tactile ==="
 
-/* --- Début Patch Tactile --- */
-#include <linux/notifier.h>
-#include <linux/module.h>
-static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);
-int panel_register_notifier(struct notifier_block *nb) {
-    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);
-}
-EXPORT_SYMBOL(panel_register_notifier);
-int panel_unregister_notifier(struct notifier_block *nb) {
-    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);
-}
-EXPORT_SYMBOL(panel_unregister_notifier);
-void touch_set_state(int state) { return; }
-EXPORT_SYMBOL(touch_set_state);
-/* --- Fin Patch Tactile --- */
-EOF
+# Force-pass des signatures modules
+echo "Patch signatures modules..."
+sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-echo "✅ Patch tactile appliqué"
+# Patch tactile Motorola
+echo "Patch tactile..."
+printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+
+echo "✅ Patches appliqués"
 
 echo "=== Configuration ==="
 export ARCH=arm64
