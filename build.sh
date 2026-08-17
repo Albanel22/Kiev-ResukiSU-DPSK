@@ -19,7 +19,7 @@ echo "=== Intégration ReSukiSU via setup.sh ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-echo "=== Injection du hook execveat manquant ==="
+echo "=== Injection du hook execveat ==="
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
   cat > /tmp/hook_execveat.py << 'PYEOF'
 import re
@@ -64,6 +64,53 @@ PYEOF
   python3 /tmp/hook_execveat.py
 else
   echo "Hook execveat déjà présent"
+fi
+
+echo "=== Injection du hook faccessat ==="
+if ! grep -q "ksu_handle_faccessat" fs/open.c; then
+  cat > /tmp/hook_faccessat.py << 'PYEOF'
+import re
+
+with open('fs/open.c', 'r') as f:
+    content = f.read()
+
+if 'ksu_handle_faccessat' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
+__attribute__((hot))
+extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
+				int *mode, int *flags);
+#endif
+'''
+    pattern = r'(SYSCALL_DEFINE3\(faccessat)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    
+    old_code = '''SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
+{
+	return do_faccessat(dfd, filename, mode);'''
+    
+    new_code = '''SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
+{
+#ifdef CONFIG_KSU_MANUAL_HOOK
+	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
+#endif
+	return do_faccessat(dfd, filename, mode);'''
+    
+    if old_code in content:
+        content = content.replace(old_code, new_code, 1)
+        print("OK: hook faccessat injecté")
+    else:
+        pattern = r'(SYSCALL_DEFINE3\(faccessat.*?\n\{)'
+        replacement = r'\1\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif'
+        content = re.sub(pattern, replacement, content, count=1)
+        print("OK: hook faccessat injecté (alternatif)")
+
+with open('fs/open.c', 'w') as f:
+    f.write(content)
+PYEOF
+  python3 /tmp/hook_faccessat.py
+else
+  echo "Hook faccessat déjà présent"
 fi
 
 echo "=== Configuration ==="
