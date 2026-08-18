@@ -13,7 +13,7 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 
 cd $GITHUB_WORKSPACE
 
-echo "=== Clonage du kernel LineageOS sm8250 ==="
+echo "=== Clonage du kernel ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
 cd kernel_sources
 
@@ -246,36 +246,57 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
+echo "=== Hook setresuid ==="
+if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
+  cat > /tmp/hook_setresuid.py << 'PYEOF'
+import re
+with open('kernel/sys.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_setresuid' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
+extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
+#endif
+'''
+    pattern = r'(long __sys_setresuid)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    pattern = r'(long __sys_setresuid.*?\n\{)'
+    replacement = r'\1\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\t(void)ksu_handle_setresuid(ruid, euid, suid);\n#endif\n'
+    content = re.sub(pattern, replacement, content, count=1)
+with open('kernel/sys.c', 'w') as f:
+    f.write(content)
+print("OK: setresuid")
+PYEOF
+  python3 /tmp/hook_setresuid.py
+fi
+
 echo "=== Téléchargement SusFS ==="
 git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 /tmp/susfs4ksu 2>/dev/null || {
-  echo "Branche kernel-4.19 non trouvée, essai main..."
   git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
 }
 
 echo "=== Copie des fichiers SusFS ==="
-cp /tmp/susfs4ksu/kernel_patches/fs/susfs.c fs/ 2>/dev/null || echo "susfs.c non trouvé"
-cp /tmp/susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || echo "susfs.h non trouvé"
-cp /tmp/susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/ 2>/dev/null || echo "susfs_def.h non trouvé"
+cp /tmp/susfs4ksu/kernel_patches/fs/susfs.c fs/ 2>/dev/null || true
+cp /tmp/susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || true
+cp /tmp/susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/ 2>/dev/null || true
 
 echo "=== Application du patch SusFS 4.19 ==="
 PATCH_419=$(find /tmp/susfs4ksu/kernel_patches -name "*4.19*" -name "*.patch" | head -1)
 if [ -n "$PATCH_419" ]; then
-  echo "Application: $PATCH_419"
   patch -p1 < "$PATCH_419" 2>&1 | tee /tmp/susfs_patch.log || true
-else
-  echo "Pas de patch 4.19 trouvé, liste des patches:"
-  find /tmp/susfs4ksu -name "*.patch" | head -20
 fi
 
-echo "=== Vérification des .rej ==="
-find . -name "*.rej" -type f | while read rej; do
-  echo "REJ: $rej"
-done
-
-echo "=== Correction include susfs_def.h ==="
+echo "=== Corrections post-patch SusFS ==="
+# 1. Ajouter include susfs_def.h dans task_mmu.c
 if ! grep -q "susfs_def.h" fs/proc/task_mmu.c; then
   sed -i '/#include <linux\/mm_inline.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif' fs/proc/task_mmu.c
-  echo "OK: include ajouté dans task_mmu.c"
+  echo "OK: include task_mmu.c"
+fi
+
+# 2. Ajouter include susfs_def.h dans namespace.c
+if ! grep -q "susfs_def.h" fs/namespace.c; then
+  sed -i '/#include <linux\/sched\/task.h>/a #if defined(CONFIG_KSU_SUSFS_SUS_MOUNT) || defined(CONFIG_KSU_SUSFS_TRY_UMOUNT)\n#include <linux/susfs_def.h>\n#endif' fs/namespace.c
+  echo "OK: include namespace.c"
 fi
 
 echo "=== Configuration ==="
@@ -324,10 +345,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-echo "=== Vérification des configs SusFS ==="
-grep "CONFIG_KSU_SUSFS" out/.config | head -20
-
-echo "=== Patch signatures modules + tactile ==="
+echo "=== Patch signatures + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
@@ -345,16 +363,12 @@ fi
 
 echo "=== Téléchargement des images stock ==="
 cd $GITHUB_WORKSPACE
-
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/boot.img" 2>/dev/null || {
-  echo "Fallback mkbootimg..."
   mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
-
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/dtbo.img" 2>/dev/null || true
 
 if [ -f "boot-stock.img" ]; then
-  echo "=== Repack avec magiskboot ==="
   mkdir -p repack
   cp boot-stock.img repack/boot.img
   wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
