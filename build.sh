@@ -59,6 +59,10 @@ for f in fs/exec.c fs/open.c fs/read_write.c fs/stat.c drivers/input/input.c ker
   fi
 done
 
+echo "=== Correction variable non utilisée ==="
+sed -i '/struct vm_area_struct \*vma;/d' fs/proc/task_mmu.c 2>/dev/null || true
+echo "OK: task_mmu.c corrigé"
+
 echo "=== Configuration ==="
 export ARCH=arm64
 export SUBARCH=arm64
