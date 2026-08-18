@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build ReSukiSU + SusFS (hybride final) ==="
+echo "=== Début du build ReSukiSU + SusFS (hybride final v2) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -277,9 +277,9 @@ if ! grep -q "susfs_def.h" fs/namespace.c; then
   echo "OK: include namespace.c ajouté"
 fi
 
-# 3. Ajouter ksu_handle_setresuid (nécessaire en mode SusFS Inline)
+# 3. Ajouter ksu_handle_setresuid CORRECTEMENT placé (après les déclarations)
 if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
-  cat > /tmp/hook_setresuid.py << 'PYEOF'
+  cat > /tmp/hook_setresuid_v2.py << 'PYEOF'
 import re
 with open('kernel/sys.c', 'r') as f:
     content = f.read()
@@ -291,14 +291,27 @@ extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
 '''
     pattern = r'(long __sys_setresuid)'
     content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-    pattern = r'(long __sys_setresuid.*?\n\{)'
-    replacement = r'\1\n#ifdef CONFIG_KSU_SUSFS\n\t(void)ksu_handle_setresuid(ruid, euid, suid);\n#endif\n'
-    content = re.sub(pattern, replacement, content, count=1)
+    
+    # Chercher les déclarations dans __sys_setresuid et placer l'appel APRÈS
+    old_code = '''	struct user_namespace *ns = current_user_ns();
+	kuid_t kruid, keuid, ksuid;'''
+    new_code = '''	struct user_namespace *ns = current_user_ns();
+	kuid_t kruid, keuid, ksuid;
+#ifdef CONFIG_KSU_SUSFS
+	(void)ksu_handle_setresuid(ruid, euid, suid);
+#endif'''
+    if old_code in content:
+        content = content.replace(old_code, new_code, 1)
+        print("OK: setresuid après déclarations")
+    else:
+        pattern = r'(long __sys_setresuid\(uid_t ruid, uid_t euid, uid_t suid\)\n\{)'
+        replacement = r'\1\n#ifdef CONFIG_KSU_SUSFS\n\t(void)ksu_handle_setresuid(ruid, euid, suid);\n#endif'
+        content = re.sub(pattern, replacement, content, count=1)
+        print("OK: setresuid (alternative)")
 with open('kernel/sys.c', 'w') as f:
     f.write(content)
-print("OK: setresuid (SusFS inline)")
 PYEOF
-  python3 /tmp/hook_setresuid.py
+  python3 /tmp/hook_setresuid_v2.py
 fi
 
 echo "=== Configuration ==="
