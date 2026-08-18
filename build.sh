@@ -6,7 +6,6 @@ df -h
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 sudo apt-get clean
 
-# Correction miroir Ubuntu
 sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list 2>/dev/null || true
 
 sudo apt-get update
@@ -272,6 +271,12 @@ echo "=== Vérification des .rej ==="
 find . -name "*.rej" -type f | while read rej; do
   echo "REJ: $rej"
 done
+
+echo "=== Correction include susfs_def.h ==="
+if ! grep -q "susfs_def.h" fs/proc/task_mmu.c; then
+  sed -i '/#include <linux\/mm_inline.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif' fs/proc/task_mmu.c
+  echo "OK: include ajouté dans task_mmu.c"
+fi
 
 echo "=== Configuration ==="
 export ARCH=arm64
