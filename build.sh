@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build ReSukiSU + SusFS (hybride final v3) ==="
+echo "=== Début du build ReSukiSU + SusFS (hybride final v4) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -20,7 +20,7 @@ echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-echo "=== Hooks ReSukiSU (manuels nécessaires) ==="
+echo "=== Hooks ReSukiSU avec DOUBLE GARDE (SUSFS || MANUAL_HOOK) ==="
 
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
   cat > /tmp/hook_execveat.py << 'PYEOF'
@@ -29,7 +29,7 @@ with open('fs/exec.c', 'r') as f:
     content = f.read()
 if 'ksu_handle_execveat' not in content:
     extern_decl = '''
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)
 __attribute__((hot))
 extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
 				void *argv, void *envp, int *flags);
@@ -42,16 +42,16 @@ extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
 	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);'''
     new_code = '''	struct user_arg_ptr argv = { .ptr.native = __argv };
 	struct user_arg_ptr envp = { .ptr.native = __envp };
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)
 	ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);
 #endif
 	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: execveat")
+        print("OK: execveat (double garde)")
     else:
         pattern = r'(int do_execve\(struct filename \*filename,.*?struct user_arg_ptr envp = \{ \.ptr\.native = __envp \};\n)'
-        replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n'
+        replacement = r'\1#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)\n\tksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n'
         content = re.sub(pattern, replacement, content, count=1)
         print("OK: execveat (alternatif)")
 with open('fs/exec.c', 'w') as f:
@@ -67,7 +67,7 @@ with open('fs/open.c', 'r') as f:
     content = f.read()
 if 'ksu_handle_faccessat' not in content:
     extern_decl = '''
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)
 __attribute__((hot))
 extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
 				int *mode, int *flags);
@@ -80,16 +80,16 @@ extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
 	return do_faccessat(dfd, filename, mode);'''
     new_code = '''SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
 {
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)
 	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
 #endif
 	return do_faccessat(dfd, filename, mode);'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: faccessat")
+        print("OK: faccessat (double garde)")
     else:
         pattern = r'(SYSCALL_DEFINE3\(faccessat.*?\n\{)'
-        replacement = r'\1\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif'
+        replacement = r'\1\n#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif'
         content = re.sub(pattern, replacement, content, count=1)
         print("OK: faccessat (alternatif)")
 with open('fs/open.c', 'w') as f:
@@ -107,7 +107,7 @@ with open('fs/stat.c', 'r') as f:
 
 if 'ksu_handle_stat' not in content:
     extern_decl = '''
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)
 __attribute__((hot))
 extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
 				int *flags);
@@ -128,16 +128,16 @@ if 'ksu_handle_stat(&dfd' not in content:
     new_code = '''	struct kstat stat;
 	int error;
 
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)
 	ksu_handle_stat(&dfd, &filename, &flag);
 #endif
 	return vfs_fstatat(dfd, filename, &stat, flag);'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: stat")
+        print("OK: stat (double garde)")
     else:
         pattern = r'(SYSCALL_DEFINE4\(newfstatat.*?int error;\n)'
-        replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n'
+        replacement = r'\1#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n'
         content = re.sub(pattern, replacement, content, count=1)
         print("OK: stat (alternatif)")
 
@@ -159,13 +159,13 @@ if 'ksu_handle_newfstat_ret' not in content:
 	if (!error)
 		error = cp_new_stat(&stat, statbuf);
 
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)
 	ksu_handle_newfstat_ret(&fd, &statbuf);
 #endif
 	return error;'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: newfstat_ret")
+        print("OK: newfstat_ret (double garde)")
 
 if 'ksu_handle_fstat64_ret' not in content:
     old_code = '''SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
@@ -185,16 +185,16 @@ if 'ksu_handle_fstat64_ret' not in content:
 	if (!error)
 		error = cp_new_stat64(&stat, statbuf);
 
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)
 	ksu_handle_fstat64_ret(&fd, &statbuf);
 #endif
 	return error;'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: fstat64_ret")
+        print("OK: fstat64_ret (double garde)")
     else:
         pattern = r'(SYSCALL_DEFINE2\(fstat64.*?return error;\n)'
-        replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_fstat64_ret(&fd, &statbuf);\n#endif\n'
+        replacement = r'\1#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)\n\tksu_handle_fstat64_ret(&fd, &statbuf);\n#endif\n'
         content = re.sub(pattern, replacement, content, count=1)
         print("OK: fstat64_ret (alternatif)")
 
@@ -214,7 +214,7 @@ with open('kernel/reboot.c', 'r') as f:
 
 if 'ksu_handle_sys_reboot' not in content:
     extern_decl = '''
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)
 extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
 #endif
 '''
@@ -227,16 +227,16 @@ extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void 
     new_code = '''	char buffer[256];
 	int ret = 0;
 
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)
 	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
 #endif'''
     
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: sys_reboot")
+        print("OK: sys_reboot (double garde)")
     else:
         pattern = r'(SYSCALL_DEFINE4\(reboot.*?\n\{)'
-        replacement = r'\1\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif'
+        replacement = r'\1\n#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif'
         content = re.sub(pattern, replacement, content, count=1)
         print("OK: sys_reboot (alternatif)")
 
@@ -277,7 +277,7 @@ if ! grep -q "susfs_def.h" fs/namespace.c; then
   echo "OK: include namespace.c ajouté"
 fi
 
-# 3. Ajouter ksu_handle_setresuid APRÈS la DERNIÈRE déclaration (bool ruid_new)
+# 3. Ajouter ksu_handle_setresuid APRÈS bool ruid_new
 if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
   cat > /tmp/hook_setresuid_v3.py << 'PYEOF'
 import re
@@ -292,7 +292,6 @@ extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
     pattern = r'(long __sys_setresuid)'
     content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
     
-    # Chercher la DERNIÈRE déclaration de variable
     old_code = '''	bool ruid_new, euid_new, suid_new;'''
     new_code = '''	bool ruid_new, euid_new, suid_new;
 #ifdef CONFIG_KSU_SUSFS
@@ -311,7 +310,7 @@ extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
             content = content.replace(old_code2, new_code2, 1)
             print("OK: setresuid APRÈS kuid_t")
         else:
-            print("ERREUR: pattern non trouvé, contexte:")
+            print("ERREUR: pattern non trouvé")
             idx = content.find('__sys_setresuid')
             if idx != -1:
                 print(content[idx:idx+600])
@@ -321,7 +320,7 @@ PYEOF
   python3 /tmp/hook_setresuid_v3.py
 fi
 
-# 4. Ajouter ksu_handle_sys_read APRÈS les déclarations
+# 4. Ajouter ksu_handle_sys_read APRÈS ksys_read
 if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
   cat > /tmp/hook_read_v2.py << 'PYEOF'
 import re
@@ -337,27 +336,24 @@ extern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd);
     pattern = r'(SYSCALL_DEFINE3\(read)'
     content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
     
-    # Chercher ksys_read ou f.file pour placer l'appel APRÈS les déclarations
-    if 'ksys_read' in content:
-        old_code = '''	return ksys_read(fd, buf, count);'''
-        new_code = '''#ifdef CONFIG_KSU
+    old_code = '''	return ksys_read(fd, buf, count);'''
+    new_code = '''#ifdef CONFIG_KSU
 	if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
 		ksu_handle_sys_read(fd);
 #endif
 	return ksys_read(fd, buf, count);'''
-        if old_code in content:
-            content = content.replace(old_code, new_code, 1)
-            print("OK: sys_read APRÈS ksys_read")
+    if old_code in content:
+        content = content.replace(old_code, new_code, 1)
+        print("OK: sys_read APRÈS ksys_read")
     else:
-        # Pour 4.19 qui utilise fdget_pos
-        old_code = '''	if (f.file) {'''
-        new_code = '''#ifdef CONFIG_KSU
+        old_code2 = '''	if (f.file) {'''
+        new_code2 = '''#ifdef CONFIG_KSU
 	if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
 		ksu_handle_sys_read(fd);
 #endif
 	if (f.file) {'''
-        if old_code in content:
-            content = content.replace(old_code, new_code, 1)
+        if old_code2 in content:
+            content = content.replace(old_code2, new_code2, 1)
             print("OK: sys_read APRÈS fdget_pos")
         else:
             print("ERREUR: pattern non trouvé")
@@ -370,7 +366,7 @@ PYEOF
   python3 /tmp/hook_read_v2.py
 fi
 
-# 5. Ajouter ksu_handle_input_handle_event APRÈS les déclarations
+# 5. Ajouter ksu_handle_input_handle_event APRÈS déclarations
 if ! grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
   cat > /tmp/hook_input_v2.py << 'PYEOF'
 import re
@@ -386,7 +382,6 @@ extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code,
     pattern = r'(static void input_handle_event\(struct input_dev \*dev,)'
     content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
     
-    # Chercher input_get_disposition pour placer l'appel APRÈS les déclarations
     old_code = '''	if (is_event_supported(type, dev->evbit, EV_MAX)) {'''
     new_code = '''#ifdef CONFIG_KSU
 	if (static_branch_unlikely(&ksu_is_input_hook_enabled))
@@ -397,7 +392,6 @@ extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code,
         content = content.replace(old_code, new_code, 1)
         print("OK: input_handle_event APRÈS déclarations")
     else:
-        # Alternative : chercher input_get_disposition
         old_code2 = '''	input_get_disposition(dev, type, code, &value);'''
         new_code2 = '''#ifdef CONFIG_KSU
 	if (static_branch_unlikely(&ksu_is_input_hook_enabled))
