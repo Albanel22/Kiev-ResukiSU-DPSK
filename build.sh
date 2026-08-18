@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build ReSukiSU + SusFS (hybride) ==="
+echo "=== Début du build ReSukiSU + SusFS (hybride corrigé) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -20,7 +20,8 @@ echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-echo "=== Hooks ReSukiSU ==="
+echo "=== Hooks ReSukiSU (UNIQUEMENT les manuels nécessaires) ==="
+
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
   cat > /tmp/hook_execveat.py << 'PYEOF'
 import re
@@ -245,29 +246,6 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
-if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
-  cat > /tmp/hook_setresuid.py << 'PYEOF'
-import re
-with open('kernel/sys.c', 'r') as f:
-    content = f.read()
-if 'ksu_handle_setresuid' not in content:
-    extern_decl = '''
-#ifdef CONFIG_KSU_MANUAL_HOOK
-extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
-#endif
-'''
-    pattern = r'(long __sys_setresuid)'
-    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-    pattern = r'(long __sys_setresuid.*?\n\{)'
-    replacement = r'\1\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\t(void)ksu_handle_setresuid(ruid, euid, suid);\n#endif\n'
-    content = re.sub(pattern, replacement, content, count=1)
-with open('kernel/sys.c', 'w') as f:
-    f.write(content)
-print("OK: setresuid")
-PYEOF
-  python3 /tmp/hook_setresuid.py
-fi
-
 echo "=== Téléchargement du repo JackA1ltman ==="
 git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo 2>/dev/null || true
 
@@ -293,60 +271,10 @@ echo "=== Corrections post-patch ==="
 sed -i '1617d' fs/proc/task_mmu.c 2>/dev/null || true
 echo "OK: task_mmu.c corrigé"
 
-# 2. Ajouter ksu_handle_sys_read si manquant
-if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
-  cat > /tmp/hook_read.py << 'PYEOF'
-import re
-with open('fs/read_write.c', 'r') as f:
-    content = f.read()
-if 'ksu_handle_sys_read' not in content:
-    extern_decl = '''
-#ifdef CONFIG_KSU
-extern struct static_key_true ksu_is_init_rc_hook_enabled;
-extern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd);
-#endif
-'''
-    pattern = r'(SYSCALL_DEFINE3\(read)'
-    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-    pattern = r'(SYSCALL_DEFINE3\(read.*?\n\{)'
-    replacement = r'\1\n#ifdef CONFIG_KSU\n\tif (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))\n\t\tksu_handle_sys_read(fd);\n#endif'
-    content = re.sub(pattern, replacement, content, count=1)
-with open('fs/read_write.c', 'w') as f:
-    f.write(content)
-print("OK: sys_read")
-PYEOF
-  python3 /tmp/hook_read.py
-fi
-
-# 3. Ajouter l'include susfs_def.h dans namespace.c
+# 2. Ajouter l'include susfs_def.h dans namespace.c
 if ! grep -q "susfs_def.h" fs/namespace.c; then
   sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
   echo "OK: include namespace.c ajouté"
-fi
-
-# 4. Ajouter ksu_handle_input_handle_event
-if ! grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
-  cat > /tmp/hook_input.py << 'PYEOF'
-import re
-with open('drivers/input/input.c', 'r') as f:
-    content = f.read()
-if 'ksu_handle_input_handle_event' not in content:
-    extern_decl = '''
-#ifdef CONFIG_KSU
-extern struct static_key_true ksu_is_input_hook_enabled;
-extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
-#endif
-'''
-    pattern = r'(static void input_handle_event\(struct input_dev \*dev,)'
-    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-    pattern = r'(input_get_disposition\(dev, type, code, &value\);?\n)'
-    replacement = r'\1#ifdef CONFIG_KSU\n\tif (static_branch_unlikely(&ksu_is_input_hook_enabled))\n\t\tksu_handle_input_handle_event(&type, &code, &value);\n#endif\n'
-    content = re.sub(pattern, replacement, content, count=1)
-with open('drivers/input/input.c', 'w') as f:
-    f.write(content)
-print("OK: input_handle_event")
-PYEOF
-  python3 /tmp/hook_input.py
 fi
 
 echo "=== Configuration ==="
