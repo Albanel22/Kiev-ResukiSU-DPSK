@@ -318,6 +318,12 @@ PYEOF
   python3 /tmp/hook_read.py
 fi
 
+# 3. Ajouter l'include susfs_def.h dans namespace.c
+if ! grep -q "susfs_def.h" fs/namespace.c; then
+  sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
+  echo "OK: include namespace.c ajouté"
+fi
+
 echo "=== Configuration ==="
 export ARCH=arm64
 export SUBARCH=arm64
