@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build ReSukiSU + SusFS (hybride corrigé) ==="
+echo "=== Début du build ReSukiSU + SusFS (hybride final) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -20,7 +20,7 @@ echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-echo "=== Hooks ReSukiSU (UNIQUEMENT les manuels nécessaires) ==="
+echo "=== Hooks ReSukiSU (manuels nécessaires) ==="
 
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
   cat > /tmp/hook_execveat.py << 'PYEOF'
@@ -275,6 +275,30 @@ echo "OK: task_mmu.c corrigé"
 if ! grep -q "susfs_def.h" fs/namespace.c; then
   sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
   echo "OK: include namespace.c ajouté"
+fi
+
+# 3. Ajouter ksu_handle_setresuid (nécessaire en mode SusFS Inline)
+if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
+  cat > /tmp/hook_setresuid.py << 'PYEOF'
+import re
+with open('kernel/sys.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_setresuid' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_SUSFS
+extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
+#endif
+'''
+    pattern = r'(long __sys_setresuid)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    pattern = r'(long __sys_setresuid.*?\n\{)'
+    replacement = r'\1\n#ifdef CONFIG_KSU_SUSFS\n\t(void)ksu_handle_setresuid(ruid, euid, suid);\n#endif\n'
+    content = re.sub(pattern, replacement, content, count=1)
+with open('kernel/sys.c', 'w') as f:
+    f.write(content)
+print("OK: setresuid (SusFS inline)")
+PYEOF
+  python3 /tmp/hook_setresuid.py
 fi
 
 echo "=== Configuration ==="
