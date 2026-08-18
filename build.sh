@@ -370,6 +370,54 @@ PYEOF
   python3 /tmp/hook_read_v2.py
 fi
 
+# 5. Ajouter ksu_handle_input_handle_event APRÈS les déclarations
+if ! grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
+  cat > /tmp/hook_input_v2.py << 'PYEOF'
+import re
+with open('drivers/input/input.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_input_handle_event' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU
+extern struct static_key_true ksu_is_input_hook_enabled;
+extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
+#endif
+'''
+    pattern = r'(static void input_handle_event\(struct input_dev \*dev,)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    
+    # Chercher input_get_disposition pour placer l'appel APRÈS les déclarations
+    old_code = '''	if (is_event_supported(type, dev->evbit, EV_MAX)) {'''
+    new_code = '''#ifdef CONFIG_KSU
+	if (static_branch_unlikely(&ksu_is_input_hook_enabled))
+		ksu_handle_input_handle_event(&type, &code, &value);
+#endif
+	if (is_event_supported(type, dev->evbit, EV_MAX)) {'''
+    if old_code in content:
+        content = content.replace(old_code, new_code, 1)
+        print("OK: input_handle_event APRÈS déclarations")
+    else:
+        # Alternative : chercher input_get_disposition
+        old_code2 = '''	input_get_disposition(dev, type, code, &value);'''
+        new_code2 = '''#ifdef CONFIG_KSU
+	if (static_branch_unlikely(&ksu_is_input_hook_enabled))
+		ksu_handle_input_handle_event(&type, &code, &value);
+#endif
+	input_get_disposition(dev, type, code, &value);'''
+        if old_code2 in content:
+            content = content.replace(old_code2, new_code2, 1)
+            print("OK: input_handle_event APRÈS input_get_disposition")
+        else:
+            print("ERREUR: pattern non trouvé")
+            idx = content.find('input_handle_event')
+            if idx != -1:
+                print(content[idx:idx+500])
+with open('drivers/input/input.c', 'w') as f:
+    f.write(content)
+PYEOF
+  python3 /tmp/hook_input_v2.py
+fi
+
 echo "=== Configuration ==="
 export ARCH=arm64
 export SUBARCH=arm64
