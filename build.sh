@@ -1,11 +1,10 @@
 #!/bin/bash
 set -e
-echo "=== Début du build ReSukiSU + SusFS pour kiev (SM8250) ==="
+echo "=== Début du build ReSukiSU + SusFS (sans SUS_MOUNT) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 sudo apt-get clean
-
 sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list 2>/dev/null || true
 
 sudo apt-get update
@@ -246,7 +245,6 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
-echo "=== Hook setresuid ==="
 if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
   cat > /tmp/hook_setresuid.py << 'PYEOF'
 import re
@@ -270,6 +268,31 @@ PYEOF
   python3 /tmp/hook_setresuid.py
 fi
 
+if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
+  cat > /tmp/hook_read.py << 'PYEOF'
+import re
+with open('fs/read_write.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_sys_read' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
+extern bool ksu_init_rc_hook __read_mostly;
+extern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd,
+				char __user **buf_ptr, size_t *count_ptr);
+#endif
+'''
+    pattern = r'(SYSCALL_DEFINE3\(read)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    pattern = r'(SYSCALL_DEFINE3\(read.*?\n\{)'
+    replacement = r'\1\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tif (unlikely(ksu_init_rc_hook))\n\t\tksu_handle_sys_read(fd, &buf, &count);\n#endif'
+    content = re.sub(pattern, replacement, content, count=1)
+with open('fs/read_write.c', 'w') as f:
+    f.write(content)
+print("OK: sys_read")
+PYEOF
+  python3 /tmp/hook_read.py
+fi
+
 echo "=== Téléchargement SusFS ==="
 git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 /tmp/susfs4ksu 2>/dev/null || {
   git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
@@ -286,17 +309,10 @@ if [ -n "$PATCH_419" ]; then
   patch -p1 < "$PATCH_419" 2>&1 | tee /tmp/susfs_patch.log || true
 fi
 
-echo "=== Corrections post-patch SusFS ==="
-# 1. Ajouter include susfs_def.h dans task_mmu.c
+echo "=== Corrections post-patch ==="
 if ! grep -q "susfs_def.h" fs/proc/task_mmu.c; then
   sed -i '/#include <linux\/mm_inline.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif' fs/proc/task_mmu.c
   echo "OK: include task_mmu.c"
-fi
-
-# 2. Ajouter include susfs_def.h dans namespace.c
-if ! grep -q "susfs_def.h" fs/namespace.c; then
-  sed -i '/#include <linux\/sched\/task.h>/a #if defined(CONFIG_KSU_SUSFS_SUS_MOUNT) || defined(CONFIG_KSU_SUSFS_TRY_UMOUNT)\n#include <linux/susfs_def.h>\n#endif' fs/namespace.c
-  echo "OK: include namespace.c"
 fi
 
 echo "=== Configuration ==="
@@ -328,18 +344,12 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "# CONFIG_VDSO32 is not set"
   echo "CONFIG_KSU_SUSFS=y"
   echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
-  echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
   echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
   echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
   echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
   echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
   echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
   echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
-  echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y"
-  echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y"
-  echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y"
-  echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y"
-  echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y"
   echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
 } >> out/.config
 
