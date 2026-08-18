@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build ==="
+echo "=== Début du build ReSukiSU + SusFS pour kiev (SM8250) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -14,7 +14,7 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 
 cd $GITHUB_WORKSPACE
 
-echo "=== Clonage du kernel ==="
+echo "=== Clonage du kernel LineageOS sm8250 ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
 cd kernel_sources
 
@@ -22,7 +22,7 @@ echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-echo "=== Hooks (execveat, faccessat, stat, fstat64, reboot) ==="
+echo "=== Hooks ReSukiSU ==="
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
   cat > /tmp/hook_execveat.py << 'PYEOF'
 import re
@@ -247,6 +247,32 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
+echo "=== Téléchargement SusFS ==="
+git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 /tmp/susfs4ksu 2>/dev/null || {
+  echo "Branche kernel-4.19 non trouvée, essai main..."
+  git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
+}
+
+echo "=== Copie des fichiers SusFS ==="
+cp /tmp/susfs4ksu/kernel_patches/fs/susfs.c fs/ 2>/dev/null || echo "susfs.c non trouvé"
+cp /tmp/susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || echo "susfs.h non trouvé"
+cp /tmp/susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/ 2>/dev/null || echo "susfs_def.h non trouvé"
+
+echo "=== Application du patch SusFS 4.19 ==="
+PATCH_419=$(find /tmp/susfs4ksu/kernel_patches -name "*4.19*" -name "*.patch" | head -1)
+if [ -n "$PATCH_419" ]; then
+  echo "Application: $PATCH_419"
+  patch -p1 < "$PATCH_419" 2>&1 | tee /tmp/susfs_patch.log || true
+else
+  echo "Pas de patch 4.19 trouvé, liste des patches:"
+  find /tmp/susfs4ksu -name "*.patch" | head -20
+fi
+
+echo "=== Vérification des .rej ==="
+find . -name "*.rej" -type f | while read rej; do
+  echo "REJ: $rej"
+done
+
 echo "=== Configuration ==="
 export ARCH=arm64
 export SUBARCH=arm64
@@ -274,21 +300,31 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_COMPAT_32BIT_TIME=y"
   echo "# CONFIG_COMPAT_VDSO is not set"
   echo "# CONFIG_VDSO32 is not set"
+  echo "CONFIG_KSU_SUSFS=y"
+  echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
+  echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
+  echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
+  echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
+  echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
+  echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
+  echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
+  echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y"
+  echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
 } >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-echo "=== Patch signatures modules + tactile (APRÈS olddefconfig) ==="
+echo "=== Vérification des configs SusFS ==="
+grep "CONFIG_KSU_SUSFS" out/.config | head -20
 
-# Force-pass des signatures modules
-echo "Patch signatures modules..."
+echo "=== Patch signatures modules + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
-
-# Patch tactile Motorola
-echo "Patch tactile..."
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
-
-echo "✅ Patches appliqués"
 
 echo "=== Compilation finale ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
@@ -298,7 +334,7 @@ if [ -f "out/arch/arm64/boot/Image" ]; then
   ls -lh out/arch/arm64/boot/
 else
   echo "❌ BUILD FAILED"
-  grep -i "error:" build.log | head -10
+  grep -i "error:" build.log | head -20
   exit 1
 fi
 
@@ -331,7 +367,7 @@ fi
 
 echo "=== Copie vers output ==="
 mkdir -p output
-cp final_boot.img output/ReSukiSU-boot.img
+cp final_boot.img output/ReSukiSU-SusFS-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 
