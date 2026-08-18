@@ -324,6 +324,31 @@ if ! grep -q "susfs_def.h" fs/namespace.c; then
   echo "OK: include namespace.c ajouté"
 fi
 
+# 4. Ajouter ksu_handle_input_handle_event
+if ! grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
+  cat > /tmp/hook_input.py << 'PYEOF'
+import re
+with open('drivers/input/input.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_input_handle_event' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU
+extern struct static_key_true ksu_is_input_hook_enabled;
+extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
+#endif
+'''
+    pattern = r'(static void input_handle_event\(struct input_dev \*dev,)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    pattern = r'(input_get_disposition\(dev, type, code, &value\);?\n)'
+    replacement = r'\1#ifdef CONFIG_KSU\n\tif (static_branch_unlikely(&ksu_is_input_hook_enabled))\n\t\tksu_handle_input_handle_event(&type, &code, &value);\n#endif\n'
+    content = re.sub(pattern, replacement, content, count=1)
+with open('drivers/input/input.c', 'w') as f:
+    f.write(content)
+print("OK: input_handle_event")
+PYEOF
+  python3 /tmp/hook_input.py
+fi
+
 echo "=== Configuration ==="
 export ARCH=arm64
 export SUBARCH=arm64
