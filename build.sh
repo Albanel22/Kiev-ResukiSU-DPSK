@@ -268,6 +268,28 @@ PYEOF
   python3 /tmp/hook_setresuid.py
 fi
 
+echo "=== Téléchargement SusFS ==="
+git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 /tmp/susfs4ksu 2>/dev/null || {
+  git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
+}
+
+echo "=== Copie des fichiers SusFS ==="
+cp /tmp/susfs4ksu/kernel_patches/fs/susfs.c fs/ 2>/dev/null || true
+cp /tmp/susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || true
+cp /tmp/susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/ 2>/dev/null || true
+
+echo "=== Application du patch SusFS 4.19 ==="
+PATCH_419=$(find /tmp/susfs4ksu/kernel_patches -name "*4.19*" -name "*.patch" | head -1)
+if [ -n "$PATCH_419" ]; then
+  patch -p1 < "$PATCH_419" 2>&1 | tee /tmp/susfs_patch.log || true
+fi
+
+echo "=== Restauration des fichiers incompatibles SUS_MOUNT ==="
+git checkout fs/namespace.c 2>/dev/null || true
+git checkout fs/read_write.c 2>/dev/null || true
+echo "OK: namespace.c et read_write.c restaurés"
+
+echo "=== Réinjection du hook read ==="
 if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
   cat > /tmp/hook_read.py << 'PYEOF'
 import re
@@ -291,22 +313,6 @@ with open('fs/read_write.c', 'w') as f:
 print("OK: sys_read")
 PYEOF
   python3 /tmp/hook_read.py
-fi
-
-echo "=== Téléchargement SusFS ==="
-git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 /tmp/susfs4ksu 2>/dev/null || {
-  git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
-}
-
-echo "=== Copie des fichiers SusFS ==="
-cp /tmp/susfs4ksu/kernel_patches/fs/susfs.c fs/ 2>/dev/null || true
-cp /tmp/susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || true
-cp /tmp/susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/ 2>/dev/null || true
-
-echo "=== Application du patch SusFS 4.19 ==="
-PATCH_419=$(find /tmp/susfs4ksu/kernel_patches -name "*4.19*" -name "*.patch" | head -1)
-if [ -n "$PATCH_419" ]; then
-  patch -p1 < "$PATCH_419" 2>&1 | tee /tmp/susfs_patch.log || true
 fi
 
 echo "=== Corrections post-patch ==="
