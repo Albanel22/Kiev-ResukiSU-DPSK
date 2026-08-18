@@ -16,11 +16,11 @@ echo "=== Clonage du kernel ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
 cd kernel_sources
 
-echo "=== Intégration ReSukiSU (méthode éprouvée) ==="
+echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-echo "=== Hooks ReSukiSU (méthode éprouvée) ==="
+echo "=== Hooks ReSukiSU ==="
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
   cat > /tmp/hook_execveat.py << 'PYEOF'
 import re
@@ -271,7 +271,7 @@ fi
 echo "=== Téléchargement du repo JackA1ltman ==="
 git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo 2>/dev/null || true
 
-echo "=== Application du patch SusFS 4.19 à jour (SANS le script d'injection) ==="
+echo "=== Application du patch SusFS 4.19 à jour ==="
 PATCH_419=$(find /tmp/jack_repo/Patches -name "*4.19*" -name "*.patch" | head -1)
 if [ -n "$PATCH_419" ]; then
   echo "Application du patch: $PATCH_419"
@@ -286,6 +286,37 @@ echo "=== Vérification des .rej ==="
 find . -name "*.rej" -type f | while read rej; do
   echo "REJ: $rej"
 done
+
+echo "=== Corrections post-patch ==="
+
+# 1. Supprimer la variable vma non utilisée (ligne 1617)
+sed -i '1617d' fs/proc/task_mmu.c 2>/dev/null || true
+echo "OK: task_mmu.c corrigé"
+
+# 2. Ajouter ksu_handle_sys_read si manquant
+if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
+  cat > /tmp/hook_read.py << 'PYEOF'
+import re
+with open('fs/read_write.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_sys_read' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU
+extern struct static_key_true ksu_is_init_rc_hook_enabled;
+extern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd);
+#endif
+'''
+    pattern = r'(SYSCALL_DEFINE3\(read)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    pattern = r'(SYSCALL_DEFINE3\(read.*?\n\{)'
+    replacement = r'\1\n#ifdef CONFIG_KSU\n\tif (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))\n\t\tksu_handle_sys_read(fd);\n#endif'
+    content = re.sub(pattern, replacement, content, count=1)
+with open('fs/read_write.c', 'w') as f:
+    f.write(content)
+print("OK: sys_read")
+PYEOF
+  python3 /tmp/hook_read.py
+fi
 
 echo "=== Configuration ==="
 export ARCH=arm64
