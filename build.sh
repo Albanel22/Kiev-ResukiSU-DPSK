@@ -321,6 +321,55 @@ PYEOF
   python3 /tmp/hook_setresuid_v3.py
 fi
 
+# 4. Ajouter ksu_handle_sys_read APRÈS les déclarations
+if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
+  cat > /tmp/hook_read_v2.py << 'PYEOF'
+import re
+with open('fs/read_write.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_sys_read' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU
+extern struct static_key_true ksu_is_init_rc_hook_enabled;
+extern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd);
+#endif
+'''
+    pattern = r'(SYSCALL_DEFINE3\(read)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    
+    # Chercher ksys_read ou f.file pour placer l'appel APRÈS les déclarations
+    if 'ksys_read' in content:
+        old_code = '''	return ksys_read(fd, buf, count);'''
+        new_code = '''#ifdef CONFIG_KSU
+	if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
+		ksu_handle_sys_read(fd);
+#endif
+	return ksys_read(fd, buf, count);'''
+        if old_code in content:
+            content = content.replace(old_code, new_code, 1)
+            print("OK: sys_read APRÈS ksys_read")
+    else:
+        # Pour 4.19 qui utilise fdget_pos
+        old_code = '''	if (f.file) {'''
+        new_code = '''#ifdef CONFIG_KSU
+	if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
+		ksu_handle_sys_read(fd);
+#endif
+	if (f.file) {'''
+        if old_code in content:
+            content = content.replace(old_code, new_code, 1)
+            print("OK: sys_read APRÈS fdget_pos")
+        else:
+            print("ERREUR: pattern non trouvé")
+            idx = content.find('SYSCALL_DEFINE3(read')
+            if idx != -1:
+                print(content[idx:idx+400])
+with open('fs/read_write.c', 'w') as f:
+    f.write(content)
+PYEOF
+  python3 /tmp/hook_read_v2.py
+fi
+
 echo "=== Configuration ==="
 export ARCH=arm64
 export SUBARCH=arm64
