@@ -247,7 +247,48 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
-# ==================== 3. INTÉGRATION SUSFS 2.3.0 (cyberc3dr - Méthode éprouvée) ====================
+# 🚨 CORRECTION CRITIQUE : Hook setresuid manquant requis par ReSukiSU
+echo "=== Hook ksu_handle_setresuid (Obligatoire pour ReSukiSU) ==="
+if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
+  cat > /tmp/hook_setresuid.py << 'PYEOF'
+import re
+with open('kernel/sys.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_setresuid' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_SUSFS
+extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
+#endif
+'''
+    pattern = r'(long __sys_setresuid)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    
+    old_code = '''	bool ruid_new, euid_new, suid_new;'''
+    new_code = '''	bool ruid_new, euid_new, suid_new;
+#ifdef CONFIG_KSU_SUSFS
+	(void)ksu_handle_setresuid(ruid, euid, suid);
+#endif'''
+    if old_code in content:
+        content = content.replace(old_code, new_code, 1)
+        print("OK: setresuid APRÈS bool ruid_new")
+    else:
+        old_code2 = '''	kuid_t kruid, keuid, ksuid;'''
+        new_code2 = '''	kuid_t kruid, keuid, ksuid;
+#ifdef CONFIG_KSU_SUSFS
+	(void)ksu_handle_setresuid(ruid, euid, suid);
+#endif'''
+        if old_code2 in content:
+            content = content.replace(old_code2, new_code2, 1)
+            print("OK: setresuid APRÈS kuid_t")
+with open('kernel/sys.c', 'w') as f:
+    f.write(content)
+PYEOF
+  python3 /tmp/hook_setresuid.py
+else
+  echo "OK: ksu_handle_setresuid déjà présent"
+fi
+
+# ==================== 3. INTÉGRATION SUSFS 2.3.0 (cyberc3dr) ====================
 cd "$GITHUB_WORKSPACE"
 echo "=== Téléchargement du SuSFS 2.3.0 depuis cyberc3dr/nGKI_Kernel_Build (rebase) ==="
 rm -rf /tmp/cyber_repo
@@ -486,11 +527,11 @@ fi
 
 # ==================== 8. REPACK ====================
 cd $GITHUB_WORKSPACE
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260906/boot.img" 2>/dev/null || {
+curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/boot.img" 2>/dev/null || {
   echo "Fallback mkbootimg..."
   mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
-curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260906/dtbo.img" 2>/dev/null || true
+curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/dtbo.img" 2>/dev/null || true
 
 if [ -f "boot-stock.img" ]; then
   echo "=== Repack avec magiskboot ==="
