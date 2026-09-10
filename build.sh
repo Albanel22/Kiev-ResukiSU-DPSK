@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build ReSukiSU + SusFS (hybride final v4) ==="
+echo "=== Début du build ReSukiSU + SusFS (hybride final v4 - Fork Albanel22) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -12,11 +12,16 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 
 cd $GITHUB_WORKSPACE
 
-echo "=== Clonage du kernel ==="
-git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
+# ==================== 1. CLONAGE DU NOYAU (MODIFIÉ : Fork Albanel22) ====================
+echo "=== Clonage du kernel depuis le fork Albanel22 (branche kiev-kernelsu-susfs) ==="
+git clone --depth=1 --branch kiev-kernelsu-susfs https://github.com/Albanel22/android_kernel_motorola_sm8250.git kernel_sources
 cd kernel_sources
+git log --oneline -1
+cd "$GITHUB_WORKSPACE"
 
+# ==================== 2. INTÉGRATION RESUKISU ====================
 echo "=== Intégration ReSukiSU ==="
+cd kernel_sources
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
