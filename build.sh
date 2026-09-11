@@ -20,6 +20,7 @@ git log --oneline -1
 cd "$GITHUB_WORKSPACE"
 
 # ==================== 2. INTÉGRATION RESUKISU ====================
+cd "$GITHUB_WORKSPACE/kernel_sources"
 echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
