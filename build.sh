@@ -47,7 +47,7 @@ with open('fs/exec.c', 'r') as f:
     content = f.read()
 if 'ksu_handle_execveat' not in content:
     extern_decl = '''
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#ifdef CONFIG_KSU
 __attribute__((hot))
 extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
 				void *argv, void *envp, int *flags);
@@ -60,7 +60,7 @@ extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
 	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);'''
     new_code = '''	struct user_arg_ptr argv = { .ptr.native = __argv };
 	struct user_arg_ptr envp = { .ptr.native = __envp };
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#ifdef CONFIG_KSU
 	ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);
 #endif
 	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);'''
@@ -69,7 +69,7 @@ extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
         print("OK: execveat")
     else:
         pattern = r'(int do_execve\(struct filename \*filename,.*?struct user_arg_ptr envp = \{ \.ptr\.native = __envp \};\n)'
-        replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n'
+        replacement = r'\1#ifdef CONFIG_KSU\n\tksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n'
         content = re.sub(pattern, replacement, content, count=1)
         print("OK: execveat (alternatif)")
 with open('fs/exec.c', 'w') as f:
@@ -86,7 +86,7 @@ with open('fs/open.c', 'r') as f:
     content = f.read()
 if 'ksu_handle_faccessat' not in content:
     extern_decl = '''
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#ifdef CONFIG_KSU
 __attribute__((hot))
 extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
 				int *mode, int *flags);
@@ -99,7 +99,7 @@ extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
 	return do_faccessat(dfd, filename, mode);'''
     new_code = '''SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
 {
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#ifdef CONFIG_KSU
 	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
 #endif
 	return do_faccessat(dfd, filename, mode);'''
@@ -108,7 +108,7 @@ extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
         print("OK: faccessat")
     else:
         pattern = r'(SYSCALL_DEFINE3\(faccessat.*?\n\{)'
-        replacement = r'\1\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif'
+        replacement = r'\1\n#ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif'
         content = re.sub(pattern, replacement, content, count=1)
         print("OK: faccessat (alternatif)")
 with open('fs/open.c', 'w') as f:
@@ -127,7 +127,7 @@ with open('fs/stat.c', 'r') as f:
 
 if 'ksu_handle_stat' not in content:
     extern_decl = '''
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#ifdef CONFIG_KSU
 __attribute__((hot))
 extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
 				int *flags);
@@ -148,7 +148,7 @@ if 'ksu_handle_stat(&dfd' not in content:
     new_code = '''	struct kstat stat;
 	int error;
 
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#ifdef CONFIG_KSU
 	ksu_handle_stat(&dfd, &filename, &flag);
 #endif
 	return vfs_fstatat(dfd, filename, &stat, flag);'''
@@ -157,7 +157,7 @@ if 'ksu_handle_stat(&dfd' not in content:
         print("OK: stat")
     else:
         pattern = r'(SYSCALL_DEFINE4\(newfstatat.*?int error;\n)'
-        replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n'
+        replacement = r'\1#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n'
         content = re.sub(pattern, replacement, content, count=1)
         print("OK: stat (alternatif)")
 
@@ -179,7 +179,7 @@ if 'ksu_handle_newfstat_ret' not in content:
 	if (!error)
 		error = cp_new_stat(&stat, statbuf);
 
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#ifdef CONFIG_KSU
 	ksu_handle_newfstat_ret(&fd, &statbuf);
 #endif
 	return error;'''
@@ -205,7 +205,7 @@ if 'ksu_handle_fstat64_ret' not in content:
 	if (!error)
 		error = cp_new_stat64(&stat, statbuf);
 
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#ifdef CONFIG_KSU
 	ksu_handle_fstat64_ret(&fd, &statbuf);
 #endif
 	return error;'''
@@ -214,7 +214,7 @@ if 'ksu_handle_fstat64_ret' not in content:
         print("OK: fstat64_ret")
     else:
         pattern = r'(SYSCALL_DEFINE2\(fstat64.*?return error;\n)'
-        replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_fstat64_ret(&fd, &statbuf);\n#endif\n'
+        replacement = r'\1#ifdef CONFIG_KSU\n\tksu_handle_fstat64_ret(&fd, &statbuf);\n#endif\n'
         content = re.sub(pattern, replacement, content, count=1)
         print("OK: fstat64_ret (alternatif)")
 
@@ -235,7 +235,7 @@ with open('kernel/reboot.c', 'r') as f:
 
 if 'ksu_handle_sys_reboot' not in content:
     extern_decl = '''
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#ifdef CONFIG_KSU
 extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
 #endif
 '''
@@ -248,7 +248,7 @@ extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void 
     new_code = '''	char buffer[256];
 	int ret = 0;
 
-#ifdef CONFIG_KSU_MANUAL_HOOK
+#ifdef CONFIG_KSU
 	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
 #endif'''
 
@@ -257,7 +257,7 @@ extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void 
         print("OK: sys_reboot")
     else:
         pattern = r'(SYSCALL_DEFINE4\(reboot.*?\n\{)'
-        replacement = r'\1\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif'
+        replacement = r'\1\n#ifdef CONFIG_KSU\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif'
         content = re.sub(pattern, replacement, content, count=1)
         print("OK: sys_reboot (alternatif)")
 
@@ -287,7 +287,6 @@ echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
 cd "$GITHUB_WORKSPACE/kernel_sources"
 patch -p1 < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
-# Copier les fichiers SuSFS complets (si présents dans le repo)
 if [ -d "/tmp/cyber_repo/Patches/fs" ]; then
     cp -r /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
@@ -295,35 +294,29 @@ if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
     cp -r /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
-# Backports (nécessaires pour 4.19)
 if [ -f "/tmp/cyber_repo/Patches/backport_patches.sh" ]; then
     echo "=== Backports SuSFS ==="
     bash /tmp/cyber_repo/Patches/backport_patches.sh || true
 fi
 
-# Hooks inline SuSFS
 if [ -f "/tmp/cyber_repo/Patches/susfs_inline_hook_patches.sh" ]; then
     echo "=== Hooks inline SuSFS ==="
     bash /tmp/cyber_repo/Patches/susfs_inline_hook_patches.sh || true
 fi
 
-# Hooks syscall SuSFS
 if [ -f "/tmp/cyber_repo/Patches/syscall_hook_patches.sh" ]; then
     echo "=== Hooks syscall SuSFS ==="
     bash /tmp/cyber_repo/Patches/syscall_hook_patches.sh || true
 fi
 
-# Nettoyage des .rej/.orig
 find . -name "*.rej" -type f -delete 2>/dev/null || true
 find . -name "*.orig" -type f -delete 2>/dev/null || true
 
-# Vérifier la version SuSFS
 if [ -f "include/linux/susfs.h" ]; then
     SUSFS_VER=$(grep -oP 'SUSFS_VERSION "\K[^"]+' include/linux/susfs.h | head -1)
     echo "✅ SuSFS version détectée : $SUSFS_VER"
 fi
 
-# Correction FS/Makefile pour inclure susfs.o et sus_su.o
 if [ -f "fs/Makefile" ]; then
     grep -q "susfs.o" fs/Makefile || echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
     if [ -f "fs/sus_su.c" ]; then
@@ -331,7 +324,6 @@ if [ -f "fs/Makefile" ]; then
     fi
 fi
 
-# Ajout des symboles SusFS manquants si nécessaire
 if [ -f "fs/susfs.c" ] && ! grep -q "susfs_ksu_sid = 0" fs/susfs.c; then
     cat >> fs/susfs.c << 'SUSFS_EOF'
 
@@ -356,11 +348,8 @@ echo "✅ SuSFS 2.3.0 intégré"
 
 # ==================== 5. PATCH SIGNATURES MODULES + TACTILE ====================
 echo "=== Patch signatures modules + tactile ==="
-
-echo "Patch signatures modules..."
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-echo "Patch tactile..."
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
 echo "✅ Patches appliqués"
@@ -382,10 +371,8 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 {
   echo "CONFIG_KSU=y"
-  echo "CONFIG_KSU_MANUAL_HOOK=y"
-  echo "CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y"
-  echo "CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y"
-  echo "CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y"
+  echo "CONFIG_KSU_SUSFS=y"
+  echo "CONFIG_THREAD_INFO_IN_TASK=y"
   echo "CONFIG_KPROBES=y"
   echo "CONFIG_HAVE_KPROBES=y"
   echo "CONFIG_KRETPROBES=y"
@@ -393,10 +380,8 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_COMPAT_32BIT_TIME=y"
   echo "# CONFIG_COMPAT_VDSO is not set"
   echo "# CONFIG_VDSO32 is not set"
-  echo "CONFIG_THREAD_INFO_IN_TASK=y"
   echo ""
   echo "# SuSFS 2.3.0"
-  echo "CONFIG_KSU_SUSFS=y"
   echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
   echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
   echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
@@ -410,15 +395,24 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# Forcer CONFIG_KSU=y de manière robuste
+# Forcer CONFIG_KSU=y et CONFIG_KSU_SUSFS=y de manière robuste
 ./scripts/config --file out/.config --enable KSU
+./scripts/config --file out/.config --enable KSU_SUSFS
 echo "CONFIG_KSU=y" >> out/.config
+echo "CONFIG_KSU_SUSFS=y" >> out/.config
+echo "CONFIG_THREAD_INFO_IN_TASK=y" >> out/.config
+
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# Vérifications finales
+# ==================== DIAGNOSTIC HOOK MODE ====================
+echo ""
+echo "=== DIAGNOSTIC HOOK MODE ==="
+grep -E "CONFIG_KSU=|CONFIG_KSU_MANUAL_HOOK=|CONFIG_KSU_TRACEPOINT_HOOK=|CONFIG_KSU_SUSFS=" out/.config
+echo ""
+
 grep -q "CONFIG_KSU=y" out/.config && echo "✅ CONFIG_KSU=y" || (echo "❌ CONFIG_KSU!=y" && exit 1)
-grep -q "CONFIG_KSU_MANUAL_HOOK=y" out/.config && echo "✅ CONFIG_KSU_MANUAL_HOOK=y" || (echo "❌ MANUAL_HOOK!=y" && exit 1)
 grep -q "CONFIG_KSU_SUSFS=y" out/.config && echo "✅ CONFIG_KSU_SUSFS=y" || (echo "❌ SUSFS!=y" && exit 1)
+grep -q "CONFIG_THREAD_INFO_IN_TASK=y" out/.config && echo "✅ THREAD_INFO_IN_TASK=y" || (echo "❌ THREAD_INFO!=y" && exit 1)
 
 # ==================== 7. COMPILATION ====================
 echo "=== Compilation ==="
