@@ -455,10 +455,28 @@ if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
     cp -rn /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
-# 6. Corrections Makefile et symboles manquants
+# 6. Corrections Makefile et NETTOYAGE DES SYMBOLES DUPLIQUÉS
 if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
     echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
     [ -f "fs/sus_su.c" ] && ! grep -q "sus_su.o" fs/Makefile && echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
+fi
+
+# 🚨 FIX CRITIQUE : ReSukiSU définit déjà ces symboles dans drivers/kernelsu/selinux/selinux.c
+# Le patch cyberc3dr a pu les ajouter à fs/susfs.c, causant un conflit de liaison (duplicate symbol).
+# Nous les supprimons de fs/susfs.c pour ne garder que la version de ReSukiSU.
+if [ -f "fs/susfs.c" ]; then
+    echo "🔧 Nettoyage des symboles dupliqués dans fs/susfs.c..."
+    sed -i '/^bool susfs_is_current_ksu_domain(void)/,/^}/d' fs/susfs.c
+    sed -i '/^u32 susfs_ksu_sid = 0;/d' fs/susfs.c
+    sed -i '/^u32 susfs_priv_app_sid = 0;/d' fs/susfs.c
+    sed -i '/EXPORT_SYMBOL(susfs_is_current_ksu_domain);/d' fs/susfs.c
+    sed -i '/EXPORT_SYMBOL(susfs_ksu_sid);/d' fs/susfs.c
+    sed -i '/EXPORT_SYMBOL(susfs_priv_app_sid);/d' fs/susfs.c
+    
+    # S'assurer que fs/susfs.c peut les utiliser via des déclarations extern
+    if ! grep -q "extern bool susfs_is_current_ksu_domain" fs/susfs.c; then
+        sed -i '1i extern bool susfs_is_current_ksu_domain(void);\nextern u32 susfs_ksu_sid;\nextern u32 susfs_priv_app_sid;' fs/susfs.c
+    fi
 fi
 
 python3 - << 'PYEOF'
@@ -474,22 +492,6 @@ PYEOF
 
 if [ -f "fs/proc/task_mmu.c" ]; then
     sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
-fi
-
-if [ -f "fs/susfs.c" ] && ! grep -q "susfs_ksu_sid = 0" fs/susfs.c; then
-    cat >> fs/susfs.c << 'SUSFS_EOF'
-#ifdef CONFIG_KSU_SUSFS
-bool susfs_is_current_ksu_domain(void) {
-    const struct cred *cred = current_cred();
-    return (cred->uid.val == 0 || cred->uid.val == 2000);
-}
-EXPORT_SYMBOL(susfs_is_current_ksu_domain);
-u32 susfs_ksu_sid = 0;
-EXPORT_SYMBOL(susfs_ksu_sid);
-u32 susfs_priv_app_sid = 0;
-EXPORT_SYMBOL(susfs_priv_app_sid);
-#endif
-SUSFS_EOF
 fi
 
 # ==================== 4. KCONFIG SUSFS ====================
@@ -618,11 +620,11 @@ fi
 
 # ==================== 8. REPACK ====================
 cd $GITHUB_WORKSPACE
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/boot.img" 2>/dev/null || {
+curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260823/boot.img" 2>/dev/null || {
   echo "Fallback mkbootimg..."
   mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
-curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/dtbo.img" 2>/dev/null || true
+curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260823/dtbo.img" 2>/dev/null || true
 
 if [ -f "boot-stock.img" ]; then
   echo "=== Repack avec magiskboot ==="
