@@ -1,22 +1,30 @@
 #!/bin/bash
 set -e
-echo "=== Début du build ==="
+
+echo "=== Début du build ReSukiSU + SuSFS 2.3.0 ==="
 df -h
 
+# ==================== ENVIRONNEMENT ====================
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 sudo apt-get clean
 
-# Correction du miroir Ubuntu (Azure est lent)
 echo "=== Correction du miroir Ubuntu ==="
 sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list 2>/dev/null || true
 sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list.d/*.list 2>/dev/null || true
 
 sudo apt-get update
-sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg
+sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev \
+    libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+    clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg wget
+
+if [ ! -f /usr/bin/ld.lld ]; then
+    sudo apt-get install -y lld
+    sudo ln -sf /usr/bin/ld.lld-15 /usr/bin/ld.lld
+fi
 
 cd $GITHUB_WORKSPACE
 
-# ==================== 1. CLONAGE DU NOYAU DEPUIS TON FORK ====================
+# ==================== 1. CLONAGE DU NOYAU ====================
 echo "=== Clonage du kernel depuis le fork Albanel22 (branche kiev-kernelsu-susfs) ==="
 git clone --depth=1 --branch kiev-kernelsu-susfs https://github.com/Albanel22/android_kernel_motorola_sm8250.git kernel_sources
 cd kernel_sources
@@ -25,10 +33,12 @@ cd "$GITHUB_WORKSPACE"
 
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
+# ==================== 2. INTÉGRATION RESUKISU ====================
 echo "=== Intégration ReSukiSU via setup.sh ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
+# ==================== 3. HOOKS MANUELS RESUKISU ====================
 echo "=== Injection hook execveat ==="
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
   cat > /tmp/hook_execveat.py << 'PYEOF'
@@ -231,17 +241,17 @@ extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void 
 '''
     pattern = r'(SYSCALL_DEFINE4\(reboot)'
     content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-    
+
     old_code = '''	char buffer[256];
 	int ret = 0;'''
-    
+
     new_code = '''	char buffer[256];
 	int ret = 0;
 
 #ifdef CONFIG_KSU_MANUAL_HOOK
 	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
 #endif'''
-    
+
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
         print("OK: sys_reboot")
@@ -257,18 +267,105 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
+echo "✅ Hooks ReSukiSU appliqués"
+
+# ==================== 4. INTÉGRATION SUSFS 2.3.0 (cyberc3dr) ====================
+cd "$GITHUB_WORKSPACE"
+echo "=== Téléchargement de SuSFS depuis cyberc3dr/nGKI_Kernel_Build ==="
+
+rm -rf /tmp/cyber_repo || true
+git clone --depth=1 --branch rebase https://github.com/cyberc3dr/nGKI_Kernel_Build.git /tmp/cyber_repo
+
+SUSFS_PATCH="/tmp/cyber_repo/Patches/Patch/susfs_patch_to_4.19.patch"
+if [ ! -f "$SUSFS_PATCH" ]; then
+    echo "❌ Patch SuSFS 4.19 introuvable !"
+    find /tmp/cyber_repo/Patches -name "*.patch" | sort
+    exit 1
+fi
+echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
+
+cd "$GITHUB_WORKSPACE/kernel_sources"
+patch -p1 < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
+
+# Copier les fichiers SuSFS complets (si présents dans le repo)
+if [ -d "/tmp/cyber_repo/Patches/fs" ]; then
+    cp -r /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
+fi
+if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
+    cp -r /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
+fi
+
+# Backports (nécessaires pour 4.19)
+if [ -f "/tmp/cyber_repo/Patches/backport_patches.sh" ]; then
+    echo "=== Backports SuSFS ==="
+    bash /tmp/cyber_repo/Patches/backport_patches.sh || true
+fi
+
+# Hooks inline SuSFS
+if [ -f "/tmp/cyber_repo/Patches/susfs_inline_hook_patches.sh" ]; then
+    echo "=== Hooks inline SuSFS ==="
+    bash /tmp/cyber_repo/Patches/susfs_inline_hook_patches.sh || true
+fi
+
+# Hooks syscall SuSFS
+if [ -f "/tmp/cyber_repo/Patches/syscall_hook_patches.sh" ]; then
+    echo "=== Hooks syscall SuSFS ==="
+    bash /tmp/cyber_repo/Patches/syscall_hook_patches.sh || true
+fi
+
+# Nettoyage des .rej/.orig
+find . -name "*.rej" -type f -delete 2>/dev/null || true
+find . -name "*.orig" -type f -delete 2>/dev/null || true
+
+# Vérifier la version SuSFS
+if [ -f "include/linux/susfs.h" ]; then
+    SUSFS_VER=$(grep -oP 'SUSFS_VERSION "\K[^"]+' include/linux/susfs.h | head -1)
+    echo "✅ SuSFS version détectée : $SUSFS_VER"
+fi
+
+# Correction FS/Makefile pour inclure susfs.o et sus_su.o
+if [ -f "fs/Makefile" ]; then
+    grep -q "susfs.o" fs/Makefile || echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
+    if [ -f "fs/sus_su.c" ]; then
+        grep -q "sus_su.o" fs/Makefile || echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
+    fi
+fi
+
+# Ajout des symboles SusFS manquants si nécessaire
+if [ -f "fs/susfs.c" ] && ! grep -q "susfs_ksu_sid = 0" fs/susfs.c; then
+    cat >> fs/susfs.c << 'SUSFS_EOF'
+
+#ifdef CONFIG_KSU_SUSFS
+bool susfs_is_current_ksu_domain(void)
+{
+    const struct cred *cred = current_cred();
+    return (cred->uid.val == 0 || cred->uid.val == 2000);
+}
+EXPORT_SYMBOL(susfs_is_current_ksu_domain);
+
+u32 susfs_ksu_sid = 0;
+EXPORT_SYMBOL(susfs_ksu_sid);
+
+u32 susfs_priv_app_sid = 0;
+EXPORT_SYMBOL(susfs_priv_app_sid);
+#endif
+SUSFS_EOF
+fi
+
+echo "✅ SuSFS 2.3.0 intégré"
+
+# ==================== 5. PATCH SIGNATURES MODULES + TACTILE ====================
 echo "=== Patch signatures modules + tactile ==="
 
-# Force-pass des signatures modules
 echo "Patch signatures modules..."
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# Patch tactile Motorola
 echo "Patch tactile..."
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
 echo "✅ Patches appliqués"
 
+# ==================== 6. CONFIGURATION ====================
 echo "=== Configuration ==="
 export ARCH=arm64
 export SUBARCH=arm64
@@ -296,10 +393,34 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_COMPAT_32BIT_TIME=y"
   echo "# CONFIG_COMPAT_VDSO is not set"
   echo "# CONFIG_VDSO32 is not set"
+  echo "CONFIG_THREAD_INFO_IN_TASK=y"
+  echo ""
+  echo "# SuSFS 2.3.0"
+  echo "CONFIG_KSU_SUSFS=y"
+  echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
+  echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
+  echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
+  echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
+  echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
+  echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
+  echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
+  echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
 } >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
+# Forcer CONFIG_KSU=y de manière robuste
+./scripts/config --file out/.config --enable KSU
+echo "CONFIG_KSU=y" >> out/.config
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+
+# Vérifications finales
+grep -q "CONFIG_KSU=y" out/.config && echo "✅ CONFIG_KSU=y" || (echo "❌ CONFIG_KSU!=y" && exit 1)
+grep -q "CONFIG_KSU_MANUAL_HOOK=y" out/.config && echo "✅ CONFIG_KSU_MANUAL_HOOK=y" || (echo "❌ MANUAL_HOOK!=y" && exit 1)
+grep -q "CONFIG_KSU_SUSFS=y" out/.config && echo "✅ CONFIG_KSU_SUSFS=y" || (echo "❌ SUSFS!=y" && exit 1)
+
+# ==================== 7. COMPILATION ====================
 echo "=== Compilation ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
@@ -308,10 +429,11 @@ if [ -f "out/arch/arm64/boot/Image" ]; then
   ls -lh out/arch/arm64/boot/
 else
   echo "❌ BUILD FAILED"
-  grep -i "error:" build.log | head -10
+  grep -i "error:" build.log | head -20
   exit 1
 fi
 
+# ==================== 8. REPACK ====================
 echo "=== Téléchargement des images stock ==="
 cd $GITHUB_WORKSPACE
 
@@ -341,7 +463,7 @@ fi
 
 echo "=== Copie vers output ==="
 mkdir -p output
-cp final_boot.img output/ReSukiSU-boot.img
+cp final_boot.img output/ReSukiSU-SuSFS-boot.img 2>/dev/null || true
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 
