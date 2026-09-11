@@ -294,7 +294,47 @@ else
   echo "OK: ksu_handle_setresuid déjà présent"
 fi
 
-# 🚨 SECTION 6 (sys_read) SUPPRIMÉE CAR CAUSANT LE SOFT BOOTLOOP 🚨
+# 6. sys_read (REQUIS par ReSukiSU - avec protection anti-bootloop)
+if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
+  cat > /tmp/hook_read_v3.py << 'PYEOF'
+import re
+with open('fs/read_write.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_sys_read' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU
+extern bool ksu_init_rc_hook __read_mostly;
+extern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd,
+				char __user **buf_ptr, size_t *count_ptr);
+#endif
+'''
+    pattern = r'(SYSCALL_DEFINE3\(read)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    
+    old_code = '''	return ksys_read(fd, buf, count);'''
+    new_code = '''#ifdef CONFIG_KSU
+	if (unlikely(ksu_init_rc_hook))
+		ksu_handle_sys_read(fd, &buf, &count);
+#endif
+	return ksys_read(fd, buf, count);'''
+    if old_code in content:
+        content = content.replace(old_code, new_code, 1)
+        print("OK: sys_read avec protection")
+    else:
+        old_code2 = '''	if (f.file) {'''
+        new_code2 = '''#ifdef CONFIG_KSU
+	if (unlikely(ksu_init_rc_hook))
+		ksu_handle_sys_read(fd, &buf, &count);
+#endif
+	if (f.file) {'''
+        if old_code2 in content:
+            content = content.replace(old_code2, new_code2, 1)
+            print("OK: sys_read avec protection (alternatif)")
+with open('fs/read_write.c', 'w') as f:
+    f.write(content)
+PYEOF
+  python3 /tmp/hook_read_v3.py
+fi
 
 # 7. input_handle_event (Hook original conservé)
 if ! grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
