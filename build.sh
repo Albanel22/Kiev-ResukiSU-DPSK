@@ -8,7 +8,6 @@ df -h
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 sudo apt-get clean
 
-echo "=== Correction du miroir Ubuntu ==="
 sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list 2>/dev/null || true
 sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list.d/*.list 2>/dev/null || true
 
@@ -25,7 +24,7 @@ fi
 cd $GITHUB_WORKSPACE
 
 # ==================== 1. CLONAGE DU NOYAU ====================
-echo "=== Clonage du kernel depuis le fork Albanel22 (branche kiev-kernelsu-susfs) ==="
+echo "=== Clonage du kernel depuis le fork Albanel22 ==="
 git clone --depth=1 --branch kiev-kernelsu-susfs https://github.com/Albanel22/android_kernel_motorola_sm8250.git kernel_sources
 cd kernel_sources
 git log --oneline -1
@@ -346,6 +345,15 @@ fi
 
 echo "✅ SuSFS 2.3.0 intégré"
 
+# ==================== 4b. CORRECTIFS POST-SUSFS ====================
+echo "=== Correctifs post-SuSFS ==="
+
+# Correction unused variable 'vma' dans task_mmu.c
+if [ -f "fs/proc/task_mmu.c" ]; then
+    sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
+    echo "✅ Correctif task_mmu.c appliqué"
+fi
+
 # ==================== 5. PATCH SIGNATURES MODULES + TACTILE ====================
 echo "=== Patch signatures modules + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
@@ -395,7 +403,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# Forcer CONFIG_KSU=y et CONFIG_KSU_SUSFS=y de manière robuste
 ./scripts/config --file out/.config --enable KSU
 ./scripts/config --file out/.config --enable KSU_SUSFS
 echo "CONFIG_KSU=y" >> out/.config
@@ -404,7 +411,7 @@ echo "CONFIG_THREAD_INFO_IN_TASK=y" >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# ==================== DIAGNOSTIC HOOK MODE ====================
+# Diagnostic
 echo ""
 echo "=== DIAGNOSTIC HOOK MODE ==="
 grep -E "CONFIG_KSU=|CONFIG_KSU_MANUAL_HOOK=|CONFIG_KSU_TRACEPOINT_HOOK=|CONFIG_KSU_SUSFS=" out/.config
