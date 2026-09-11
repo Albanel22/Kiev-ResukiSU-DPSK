@@ -293,46 +293,7 @@ else
   echo "OK: ksu_handle_setresuid déjà présent"
 fi
 
-# 6. sys_read (Hook original conservé)
-if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
-  cat > /tmp/hook_read_v2.py << 'PYEOF'
-import re
-with open('fs/read_write.c', 'r') as f:
-    content = f.read()
-if 'ksu_handle_sys_read' not in content:
-    extern_decl = '''
-#ifdef CONFIG_KSU
-extern struct static_key_true ksu_is_init_rc_hook_enabled;
-extern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd);
-#endif
-'''
-    pattern = r'(SYSCALL_DEFINE3\(read)'
-    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-    
-    old_code = '''	return ksys_read(fd, buf, count);'''
-    new_code = '''#ifdef CONFIG_KSU
-	if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
-		ksu_handle_sys_read(fd);
-#endif
-	return ksys_read(fd, buf, count);'''
-    if old_code in content:
-        content = content.replace(old_code, new_code, 1)
-        print("OK: sys_read APRÈS ksys_read")
-    else:
-        old_code2 = '''	if (f.file) {'''
-        new_code2 = '''#ifdef CONFIG_KSU
-	if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
-		ksu_handle_sys_read(fd);
-#endif
-	if (f.file) {'''
-        if old_code2 in content:
-            content = content.replace(old_code2, new_code2, 1)
-            print("OK: sys_read APRÈS fdget_pos")
-with open('fs/read_write.c', 'w') as f:
-    f.write(content)
-PYEOF
-  python3 /tmp/hook_read_v2.py
-fi
+# 🚨 SECTION 6 (sys_read) SUPPRIMÉE CAR CAUSANT LE SOFT BOOTLOOP 🚨
 
 # 7. input_handle_event (Hook original conservé)
 if ! grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
@@ -461,9 +422,6 @@ if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
     [ -f "fs/sus_su.c" ] && ! grep -q "sus_su.o" fs/Makefile && echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
 fi
 
-# 🚨 FIX CRITIQUE : ReSukiSU définit déjà ces symboles dans drivers/kernelsu/selinux/selinux.c
-# Le patch cyberc3dr a pu les ajouter à fs/susfs.c, causant un conflit de liaison (duplicate symbol).
-# Nous les supprimons de fs/susfs.c pour ne garder que la version de ReSukiSU.
 if [ -f "fs/susfs.c" ]; then
     echo "🔧 Nettoyage des symboles dupliqués dans fs/susfs.c..."
     sed -i '/^bool susfs_is_current_ksu_domain(void)/,/^}/d' fs/susfs.c
@@ -473,7 +431,6 @@ if [ -f "fs/susfs.c" ]; then
     sed -i '/EXPORT_SYMBOL(susfs_ksu_sid);/d' fs/susfs.c
     sed -i '/EXPORT_SYMBOL(susfs_priv_app_sid);/d' fs/susfs.c
     
-    # S'assurer que fs/susfs.c peut les utiliser via des déclarations extern
     if ! grep -q "extern bool susfs_is_current_ksu_domain" fs/susfs.c; then
         sed -i '1i extern bool susfs_is_current_ksu_domain(void);\nextern u32 susfs_ksu_sid;\nextern u32 susfs_priv_app_sid;' fs/susfs.c
     fi
@@ -556,10 +513,9 @@ export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
 
-# 🚨 CIBLAGE EXPLICITE : Plus de "find ... | head -1" aléatoire
 CONFIG_NAME="vendor/lito-perf_defconfig"
 if [ ! -f "arch/arm64/configs/$CONFIG_NAME" ]; then
-    CONFIG_NAME="lito-perf_defconfig" # Fallback si le dossier vendor n'existe pas
+    CONFIG_NAME="lito-perf_defconfig"
 fi
 
 echo "Config utilisée de manière explicite : $CONFIG_NAME"
