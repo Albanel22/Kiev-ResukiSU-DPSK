@@ -12,12 +12,12 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 
 cd $GITHUB_WORKSPACE
 
-# ==================== 1. CLONAGE DU NOYAU (Fork Albanel22) ====================
-echo "=== Clonage du kernel depuis le fork Albanel22 (branche kiev-kernelsu-susfs) ==="
-rm -rf kernel_sources
+# ==================== 1. CLONAGE DU NOYAU ====================
+echo "=== Clonage du kernel depuis le fork Albanel22 ==="
 git clone --depth=1 --branch kiev-kernelsu-susfs https://github.com/Albanel22/android_kernel_motorola_sm8250.git kernel_sources
 cd kernel_sources
 git log --oneline -1
+cd "$GITHUB_WORKSPACE"
 
 # ==================== 2. INTÉGRATION RESUKISU ====================
 echo "=== Intégration ReSukiSU ==="
