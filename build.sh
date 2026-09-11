@@ -25,6 +25,8 @@ rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
 echo "=== Hooks ReSukiSU ==="
+
+# 1. execveat
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
   cat > /tmp/hook_execveat.py << 'PYEOF'
 import re
@@ -63,6 +65,7 @@ PYEOF
   python3 /tmp/hook_execveat.py
 fi
 
+# 2. faccessat
 if ! grep -q "ksu_handle_faccessat" fs/open.c; then
   cat > /tmp/hook_faccessat.py << 'PYEOF'
 import re
@@ -101,6 +104,7 @@ PYEOF
   python3 /tmp/hook_faccessat.py
 fi
 
+# 3. stat (avec newfstat_ret et fstat64_ret)
 if ! grep -q "ksu_handle_fstat64_ret" fs/stat.c; then
   cat > /tmp/hook_stat_complete.py << 'PYEOF'
 import re
@@ -207,6 +211,7 @@ PYEOF
   python3 /tmp/hook_stat_complete.py
 fi
 
+# 4. sys_reboot
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
   cat > /tmp/hook_reboot.py << 'PYEOF'
 import re
@@ -247,7 +252,7 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
-# 🚨 CORRECTION CRITIQUE : Hook setresuid manquant requis par ReSukiSU
+# 5. setresuid (CORRECTION CRITIQUE : Requis par ReSukiSU)
 echo "=== Hook ksu_handle_setresuid (Obligatoire pour ReSukiSU) ==="
 if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
   cat > /tmp/hook_setresuid.py << 'PYEOF'
@@ -286,6 +291,88 @@ PYEOF
   python3 /tmp/hook_setresuid.py
 else
   echo "OK: ksu_handle_setresuid déjà présent"
+fi
+
+# 6. sys_read (Hook original conservé)
+if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
+  cat > /tmp/hook_read_v2.py << 'PYEOF'
+import re
+with open('fs/read_write.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_sys_read' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU
+extern struct static_key_true ksu_is_init_rc_hook_enabled;
+extern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd);
+#endif
+'''
+    pattern = r'(SYSCALL_DEFINE3\(read)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    
+    old_code = '''	return ksys_read(fd, buf, count);'''
+    new_code = '''#ifdef CONFIG_KSU
+	if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
+		ksu_handle_sys_read(fd);
+#endif
+	return ksys_read(fd, buf, count);'''
+    if old_code in content:
+        content = content.replace(old_code, new_code, 1)
+        print("OK: sys_read APRÈS ksys_read")
+    else:
+        old_code2 = '''	if (f.file) {'''
+        new_code2 = '''#ifdef CONFIG_KSU
+	if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
+		ksu_handle_sys_read(fd);
+#endif
+	if (f.file) {'''
+        if old_code2 in content:
+            content = content.replace(old_code2, new_code2, 1)
+            print("OK: sys_read APRÈS fdget_pos")
+with open('fs/read_write.c', 'w') as f:
+    f.write(content)
+PYEOF
+  python3 /tmp/hook_read_v2.py
+fi
+
+# 7. input_handle_event (Hook original conservé)
+if ! grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
+  cat > /tmp/hook_input_v2.py << 'PYEOF'
+import re
+with open('drivers/input/input.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_input_handle_event' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU
+extern struct static_key_true ksu_is_input_hook_enabled;
+extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
+#endif
+'''
+    pattern = r'(static void input_handle_event\(struct input_dev \*dev,)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    
+    old_code = '''	if (is_event_supported(type, dev->evbit, EV_MAX)) {'''
+    new_code = '''#ifdef CONFIG_KSU
+	if (static_branch_unlikely(&ksu_is_input_hook_enabled))
+		ksu_handle_input_handle_event(&type, &code, &value);
+#endif
+	if (is_event_supported(type, dev->evbit, EV_MAX)) {'''
+    if old_code in content:
+        content = content.replace(old_code, new_code, 1)
+        print("OK: input_handle_event APRÈS déclarations")
+    else:
+        old_code2 = '''	input_get_disposition(dev, type, code, &value);'''
+        new_code2 = '''#ifdef CONFIG_KSU
+	if (static_branch_unlikely(&ksu_is_input_hook_enabled))
+		ksu_handle_input_handle_event(&type, &code, &value);
+#endif
+	input_get_disposition(dev, type, code, &value);'''
+        if old_code2 in content:
+            content = content.replace(old_code2, new_code2, 1)
+            print("OK: input_handle_event APRÈS input_get_disposition")
+with open('drivers/input/input.c', 'w') as f:
+    f.write(content)
+PYEOF
+  python3 /tmp/hook_input_v2.py
 fi
 
 # ==================== 3. INTÉGRATION SUSFS 2.3.0 (cyberc3dr) ====================
@@ -352,7 +439,7 @@ PYEOF
     rm -f fs/namespace.c.rej
 fi
 
-# 4. VÉRIFICATION STRICTE : Interdiction de continuer s'il reste des .rej
+# 4. VÉRIFICATION STRICTE
 if find . -name "*.rej" -type f | grep -q .; then
     echo "❌ ÉCHEC CRITIQUE : Des rejets de patch SuSFS persistent."
     find . -name "*.rej" -type f -exec echo "=== {} ===" \; -exec cat {} \;
@@ -459,17 +546,21 @@ endif
 KCONFIG_EOF
 fi
 
-# ==================== 5. CONFIGURATION ====================
+# ==================== 5. CONFIGURATION (CIBLAGE EXPLICITE) ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
 export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
-CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*lito*" -o -name "*sm8250*" | head -1)
-CONFIG_NAME=$(basename "$CONFIG")
-cp "$CONFIG" arch/arm64/configs/$CONFIG_NAME
-echo "Config utilisée: $CONFIG"
+
+# 🚨 CIBLAGE EXPLICITE : Plus de "find ... | head -1" aléatoire
+CONFIG_NAME="vendor/lito-perf_defconfig"
+if [ ! -f "arch/arm64/configs/$CONFIG_NAME" ]; then
+    CONFIG_NAME="lito-perf_defconfig" # Fallback si le dossier vendor n'existe pas
+fi
+
+echo "Config utilisée de manière explicite : $CONFIG_NAME"
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
@@ -527,11 +618,11 @@ fi
 
 # ==================== 8. REPACK ====================
 cd $GITHUB_WORKSPACE
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260823/boot.img" 2>/dev/null || {
+curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/boot.img" 2>/dev/null || {
   echo "Fallback mkbootimg..."
   mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
-curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260823/dtbo.img" 2>/dev/null || true
+curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/dtbo.img" 2>/dev/null || true
 
 if [ -f "boot-stock.img" ]; then
   echo "=== Repack avec magiskboot ==="
