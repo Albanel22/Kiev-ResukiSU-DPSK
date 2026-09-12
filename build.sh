@@ -264,6 +264,38 @@ else
   echo "OK: ksu_handle_setresuid déjà présent"
 fi
 
+# 6. sys_read (Requis par ReSukiSU pour la compilation)
+echo "=== Hook ksu_handle_sys_read ==="
+if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
+  cat > /tmp/hook_sys_read.py << 'PYEOF'
+import re
+with open('fs/read_write.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_sys_read' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU
+extern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);
+#endif
+'''
+    pattern = r'(SYSCALL_DEFINE3\(read)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    
+    old_code = '''	return ksys_read(fd, buf, count);'''
+    new_code = '''#ifdef CONFIG_KSU
+	ksu_handle_sys_read(fd, &buf, &count);
+#endif
+	return ksys_read(fd, buf, count);'''
+    if old_code in content:
+        content = content.replace(old_code, new_code, 1)
+        print("OK: sys_read")
+with open('fs/read_write.c', 'w') as f:
+    f.write(content)
+PYEOF
+  python3 /tmp/hook_sys_read.py
+else
+  echo "OK: ksu_handle_sys_read déjà présent"
+fi
+
 # ==================== 3. INTÉGRATION SUSFS 2.3.0 ====================
 cd "$GITHUB_WORKSPACE"
 echo "=== Intégration SuSFS 2.3.0 depuis cyberc3dr ==="
