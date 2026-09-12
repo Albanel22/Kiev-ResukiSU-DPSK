@@ -326,6 +326,48 @@ else
   echo "OK: ksu_handle_sys_read déjà présent"
 fi
 
+# --- input_event (Requis par ReSukiSU quand SuSFS est présent) ---
+if ! grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
+  cat > /tmp/hook_input.py << 'PYEOF'
+import re
+with open('drivers/input/input.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_input_handle_event' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_MANUAL_HOOK
+extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
+#endif
+'''
+    pattern = r'(void input_event\(struct input_dev \*dev,)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    
+    old_code = '''void input_event(struct input_dev *dev,
+		 unsigned int type, unsigned int code, int value)
+{
+	unsigned long flags;
+
+	if (is_event_supported(type, dev->evbit, EV_MAX)) {'''
+    new_code = '''void input_event(struct input_dev *dev,
+		 unsigned int type, unsigned int code, int value)
+{
+	unsigned long flags;
+
+#ifdef CONFIG_KSU_MANUAL_HOOK
+	ksu_handle_input_handle_event(&type, &code, &value);
+#endif
+
+	if (is_event_supported(type, dev->evbit, EV_MAX)) {'''
+    if old_code in content:
+        content = content.replace(old_code, new_code, 1)
+        print("OK: input_event (appel inconditionnel)")
+with open('drivers/input/input.c', 'w') as f:
+    f.write(content)
+PYEOF
+  python3 /tmp/hook_input.py
+else
+  echo "OK: ksu_handle_input_handle_event déjà présent"
+fi
+
 # ==================== 3.5. INTÉGRATION SUSFS 2.3.0 (AJOUT) ====================
 echo "=== Intégration SuSFS 2.3.0 depuis cyberc3dr ==="
 cd "$GITHUB_WORKSPACE"
