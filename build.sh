@@ -272,6 +272,49 @@ find . -name "*.rej" -type f | while read rej; do
   echo "REJ: $rej"
 done
 
+echo "=== Corrections dynamiques des échecs de patch SusFS ==="
+cat > /tmp/fix_susfs_patch.py << 'PYEOF'
+import re
+
+# 1. Correction dans include/linux/mount.h (susfs_mnt_id_backup & includes)
+try:
+    with open('include/linux/mount.h', 'r') as f:
+        content = f.read()
+
+    if '#include <linux/susfs.h>' not in content:
+        content = '#include <linux/susfs.h>\n' + content
+
+    if 'susfs_mnt_id_backup' not in content:
+        target = 'struct vfsmount {'
+        replacement = 'struct vfsmount {\n#ifdef CONFIG_KSU_SUSFS\n\tu32 susfs_mnt_id_backup;\n#endif'
+        content = content.replace(target, replacement, 1)
+
+    with open('include/linux/mount.h', 'w') as f:
+        f.write(content)
+    print("OK: include/linux/mount.h corrigé")
+except Exception as e:
+    print(f"Erreur mount.h: {e}")
+
+# 2. Correction dans fs/namespace.c (headers & signatures alloc_vfsmnt)
+try:
+    with open('fs/namespace.c', 'r') as f:
+        content = f.read()
+
+    if '#include <linux/susfs.h>' not in content:
+        content = '#include <linux/susfs.h>\n' + content
+
+    if 'static struct mount *alloc_vfsmnt(const char *name, bool should_spoof, int custom_mnt_id)' in content:
+        # Résolution des signatures alloc_vfsmnt restées à 1 seul argument après patch partiel
+        content = re.sub(r'alloc_vfsmnt\(([^,\)]+)\)', r'alloc_vfsmnt(\1, false, 0)', content)
+
+    with open('fs/namespace.c', 'w') as f:
+        f.write(content)
+    print("OK: fs/namespace.c corrigé")
+except Exception as e:
+    print(f"Erreur namespace.c: {e}")
+PYEOF
+python3 /tmp/fix_susfs_patch.py
+
 echo "=== Correction include susfs_def.h ==="
 if ! grep -q "susfs_def.h" fs/proc/task_mmu.c; then
   sed -i '/#include <linux\/mm_inline.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif' fs/proc/task_mmu.c
