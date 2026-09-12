@@ -668,9 +668,9 @@ fi
 echo "=== Compilation de ksud (ReSukiSU) ==="
 cd "$GITHUB_WORKSPACE"
 
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly
 source "$HOME/.cargo/env"
-rustup target add aarch64-linux-android
+rustup target add aarch64-linux-android --toolchain nightly
 
 wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
 unzip -q android-ndk-r26d-linux.zip
