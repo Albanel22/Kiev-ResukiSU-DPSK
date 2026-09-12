@@ -367,10 +367,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 {
   echo "CONFIG_KSU=y"
-  echo "CONFIG_KSU_MANUAL_HOOK=y"
-  echo "CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y"
-  echo "CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y"
-  echo "CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y"
   echo "CONFIG_KSU_SUSFS=y"
   echo "CONFIG_THREAD_INFO_IN_TASK=y"
   echo "CONFIG_KPROBES=y"
@@ -397,11 +393,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 # Forcer les options critiques
 ./scripts/config --file out/.config --enable KSU
-./scripts/config --file out/.config --enable KSU_MANUAL_HOOK
 ./scripts/config --file out/.config --enable KSU_SUSFS
 ./scripts/config --file out/.config --enable THREAD_INFO_IN_TASK
 echo "CONFIG_KSU=y" >> out/.config
-echo "CONFIG_KSU_MANUAL_HOOK=y" >> out/.config
 echo "CONFIG_KSU_SUSFS=y" >> out/.config
 echo "CONFIG_THREAD_INFO_IN_TASK=y" >> out/.config
 
@@ -410,10 +404,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 # Diagnostic
 echo ""
 echo "=== DIAGNOSTIC FINAL ==="
-grep -E "CONFIG_KSU=|CONFIG_KSU_MANUAL_HOOK=|CONFIG_KSU_SUSFS=|CONFIG_THREAD_INFO_IN_TASK=" out/.config
+grep -E "CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_THREAD_INFO_IN_TASK=" out/.config
 echo ""
 grep -q "CONFIG_KSU=y" out/.config && echo "✅ CONFIG_KSU=y" || (echo "❌ KSU!=y" && exit 1)
-grep -q "CONFIG_KSU_MANUAL_HOOK=y" out/.config && echo "✅ CONFIG_KSU_MANUAL_HOOK=y" || (echo "❌ MANUAL_HOOK!=y" && exit 1)
 grep -q "CONFIG_KSU_SUSFS=y" out/.config && echo "✅ CONFIG_KSU_SUSFS=y" || (echo "❌ SUSFS!=y" && exit 1)
 grep -q "CONFIG_THREAD_INFO_IN_TASK=y" out/.config && echo "✅ THREAD_INFO_IN_TASK=y" || (echo "❌ THREAD_INFO!=y" && exit 1)
 
