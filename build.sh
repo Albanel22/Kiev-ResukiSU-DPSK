@@ -1,38 +1,30 @@
 #!/bin/bash
-set -euo pipefail
-
-echo "=== Début du build ==="
+set -e
+echo "=== Début du build ReSukiSU + SuSFS 2.3.0 (cyberc3dr) pour kiev (SM8250) ==="
 df -h
 
-# Nettoyage espace disque
-sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
-sudo apt-get clean || true
+sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+sudo apt-get clean
 
-# Correction miroir Ubuntu
 sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list 2>/dev/null || true
 
 sudo apt-get update
-sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev libssl-dev \
-  libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang llvm lld \
-  device-tree-compiler zip unzip curl git python3 mkbootimg
+sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg
 
-cd "$GITHUB_WORKSPACE"
+cd $GITHUB_WORKSPACE
 
 # ==================== 1. CLONAGE DU NOYAU ====================
 echo "=== Clonage du kernel depuis le fork Albanel22 ==="
-git clone --depth=1 --branch kiev-kernelsu-susfs \
-  https://github.com/Albanel22/android_kernel_motorola_sm8250.git kernel_sources
-
+git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git -b kiev-kernelsu-susfs --depth=1 kernel_sources
 cd kernel_sources
-git log --oneline -1
 
 # ==================== 2. INTÉGRATION ReSukiSU ====================
 echo "=== Intégration ReSukiSU ==="
-rm -rf drivers/kernelsu KernelSU susfs4ksu || true
+rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-# ==================== 3. HOOKS MANUELS ====================
-echo "=== Hooks (execveat, faccessat, stat, fstat64, reboot, setresuid, sys_read, input) ==="
+# ==================== 3. HOOKS MANUELS ReSukiSU ====================
+echo "=== Hooks ReSukiSU (execveat, faccessat, stat, reboot, setresuid, sys_read, input) ==="
 
 # --- execveat ---
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
@@ -262,7 +254,7 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
-# --- setresuid ---
+# --- setresuid (Requis par ReSukiSU quand SuSFS est présent) ---
 if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
   cat > /tmp/hook_setresuid.py << 'PYEOF'
 import re
@@ -293,7 +285,7 @@ else
   echo "OK: ksu_handle_setresuid déjà présent"
 fi
 
-# --- sys_read ---
+# --- sys_read (Requis par ReSukiSU quand SuSFS est présent) ---
 if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
   cat > /tmp/hook_sys_read.py << 'PYEOF'
 import re
@@ -326,7 +318,7 @@ else
   echo "OK: ksu_handle_sys_read déjà présent"
 fi
 
-# --- input_event ---
+# --- input_event (Requis par ReSukiSU quand SuSFS est présent) ---
 if ! grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
   cat > /tmp/hook_input.py << 'PYEOF'
 import re
@@ -368,7 +360,52 @@ else
   echo "OK: ksu_handle_input_handle_event déjà présent"
 fi
 
-# ==================== 3.5. INTÉGRATION SUSFS 2.3.0 ====================
+# ==================== 3.4. AJOUT : Fonction disable_seccomp() ====================
+echo "=== Ajout de la fonction disable_seccomp() dans ReSukiSU ==="
+
+# Chercher si la fonction existe déjà dans ReSukiSU
+if ! grep -rq "disable_seccomp" drivers/kernelsu/ 2>/dev/null; then
+    echo "⚠️  Fonction disable_seccomp() non trouvée dans ReSukiSU. Ajout..."
+    
+    # Ajouter la fonction dans core_hook.c (ou ksu.c selon la version)
+    KSU_CORE_FILE=""
+    if [ -f "drivers/kernelsu/core_hook.c" ]; then
+        KSU_CORE_FILE="drivers/kernelsu/core_hook.c"
+    elif [ -f "drivers/kernelsu/ksu.c" ]; then
+        KSU_CORE_FILE="drivers/kernelsu/ksu.c"
+    fi
+    
+    if [ -n "$KSU_CORE_FILE" ]; then
+        cat >> "$KSU_CORE_FILE" << 'SECCOMP_EOF'
+
+/* Fonction pour désactiver seccomp dynamiquement */
+static void disable_seccomp(void)
+{
+	assert_spin_locked(&current->sighand->siglock);
+	// disable seccomp
+#if defined(CONFIG_GENERIC_ENTRY) &&                                           \
+	LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
+	current_thread_info()->syscall_work &= ~SYSCALL_WORK_SECCOMP;
+#else
+	current_thread_info()->flags &= ~(TIF_SECCOMP | _TIF_SECCOMP);
+#endif
+
+#ifdef CONFIG_SECCOMP
+	current->seccomp.mode = 0;
+	current->seccomp.filter = NULL;
+#else
+#endif
+}
+SECCOMP_EOF
+        echo "✅ Fonction disable_seccomp() ajoutée dans $KSU_CORE_FILE"
+    else
+        echo "❌ Fichier core_hook.c ou ksu.c non trouvé !"
+    fi
+else
+    echo "✅ Fonction disable_seccomp() déjà présente dans ReSukiSU"
+fi
+
+# ==================== 3.5. INTÉGRATION SUSFS 2.3.0 (cyberc3dr) ====================
 echo "=== Intégration SuSFS 2.3.0 depuis cyberc3dr ==="
 cd "$GITHUB_WORKSPACE"
 rm -rf /tmp/cyber_repo
@@ -547,7 +584,7 @@ endif
 KCONFIG_EOF
 fi
 
-echo "✅ SuSFS intégré"
+echo "✅ SuSFS 2.3.0 intégré"
 
 # ==================== 4. CONFIGURATION ====================
 echo "=== Configuration ==="
@@ -570,7 +607,7 @@ fi
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
-# Options KernelSU + compat + SUSFS + SECCOMP DÉSACTIVÉ
+# Options KernelSU + compat + SUSFS
 {
   echo "CONFIG_KSU=y"
   echo "CONFIG_KSU_MANUAL_HOOK=y"
@@ -584,7 +621,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_COMPAT_32BIT_TIME=y"
   echo "# CONFIG_COMPAT_VDSO is not set"
   echo "# CONFIG_VDSO32 is not set"
-  # Options SuSFS
   echo "CONFIG_KSU_SUSFS=y"
   echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
   echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
@@ -600,8 +636,8 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y"
   echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y"
   echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y"
-# 🆕 SECCOMP : gardé actif mais mode filtre désactivé
-  echo "CONFIG_SECCOMP=y"
+  # 🆕 DÉSACTIVATION DE SECCOMP (comme dans le build qui marche)
+  echo "# CONFIG_SECCOMP is not set"
   echo "# CONFIG_SECCOMP_FILTER is not set"
 } >> out/.config
 
@@ -652,18 +688,10 @@ fi
 echo "=== Téléchargement des images stock ==="
 cd "$GITHUB_WORKSPACE"
 
+# 🔄 Dates mises à jour au 30 août 2026
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
   echo "Fallback mkbootimg..."
-  mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image \
-    --ramdisk /dev/null \
-    --output final_boot.img \
-    --header_version 2 \
-    --pagesize 4096 \
-    --base 0x00000000 \
-    --kernel_offset 0x00008000 \
-    --ramdisk_offset 0x01000000 \
-    --tags_offset 0x00000100 \
-    --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
+  mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
 
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
@@ -679,7 +707,7 @@ if [ -f "boot-stock.img" ]; then
   rm -rf Magisk-v27.0.apk lib/
   cd repack
   ./magiskboot unpack boot.img
-  cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
+  cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
   ./magiskboot repack boot.img new-boot.img
   mv new-boot.img ../final_boot.img
   cd ..
