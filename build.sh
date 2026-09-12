@@ -264,88 +264,11 @@ else
   echo "OK: ksu_handle_setresuid déjà présent"
 fi
 
-# 6. sys_read (CORRIGÉ : Ajoute ksu_init_rc_hook et utilise CONFIG_KSU_MANUAL_HOOK)
-echo "=== Hook ksu_handle_sys_read ==="
-if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
-  cat > /tmp/hook_sys_read.py << 'PYEOF'
-import re
-with open('fs/read_write.c', 'r') as f:
-    content = f.read()
-if 'ksu_handle_sys_read' not in content:
-    extern_decl = '''
-#ifdef CONFIG_KSU_MANUAL_HOOK
-extern bool ksu_init_rc_hook __read_mostly;
-extern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd,
-				char __user **buf_ptr, size_t *count_ptr);
-#endif
-'''
-    pattern = r'(SYSCALL_DEFINE3\(read)'
-    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-    
-    old_code = '''SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
-{'''
-    new_code = '''SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
-{
-#ifdef CONFIG_KSU_MANUAL_HOOK
-	if (unlikely(ksu_init_rc_hook)) 
-		ksu_handle_sys_read(fd, &buf, &count);
-#endif'''
-    if old_code in content:
-        content = content.replace(old_code, new_code, 1)
-        print("OK: sys_read")
-with open('fs/read_write.c', 'w') as f:
-    f.write(content)
-PYEOF
-  python3 /tmp/hook_sys_read.py
-else
-  echo "OK: ksu_handle_sys_read déjà présent"
-fi
-
-# 7. input_event (NOUVEAU : Hook conditionnel pour input subsystem)
-echo "=== Hook ksu_handle_input_handle_event ==="
-if ! grep -q "ksu_input_hook" drivers/input/input.c; then
-  cat > /tmp/hook_input.py << 'PYEOF'
-import re
-with open('drivers/input/input.c', 'r') as f:
-    content = f.read()
-if 'ksu_input_hook' not in content:
-    extern_decl = '''
-#ifdef CONFIG_KSU_MANUAL_HOOK
-extern bool ksu_input_hook __read_mostly;
-extern __attribute__((cold)) int ksu_handle_input_handle_event(
-			unsigned int *type, unsigned int *code, int *value);
-#endif
-'''
-    pattern = r'(void input_event\(struct input_dev \*dev,)'
-    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-    
-    old_code = '''void input_event(struct input_dev *dev,
-		 unsigned int type, unsigned int code, int value)
-{
-	unsigned long flags;
-
-	if (is_event_supported(type, dev->evbit, EV_MAX)) {'''
-    new_code = '''void input_event(struct input_dev *dev,
-		 unsigned int type, unsigned int code, int value)
-{
-	unsigned long flags;
-
-#ifdef CONFIG_KSU_MANUAL_HOOK
-	if (unlikely(ksu_input_hook))
-		ksu_handle_input_handle_event(&type, &code, &value);
-#endif
-
-	if (is_event_supported(type, dev->evbit, EV_MAX)) {'''
-    if old_code in content:
-        content = content.replace(old_code, new_code, 1)
-        print("OK: input_event")
-with open('drivers/input/input.c', 'w') as f:
-    f.write(content)
-PYEOF
-  python3 /tmp/hook_input.py
-else
-  echo "OK: ksu_input_hook déjà présent"
-fi
+# 🚨 NOTE : Les hooks manuels sys_read et input_event ont été SUPPRIMÉS
+# car ils entrent en conflit avec SuSFS.
+# À la place, on active les hooks AUTO dans la configuration ci-dessous :
+# - CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y (remplace sys_read manuel)
+# - CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y (remplace input_event manuel)
 
 # ==================== 3. INTÉGRATION SUSFS 2.3.0 ====================
 cd "$GITHUB_WORKSPACE"
@@ -551,8 +474,8 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_KSU=y"
   echo "CONFIG_KSU_MANUAL_HOOK=y"
   echo "CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y"
-  echo "# CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK is not set"
-  echo "# CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK is not set"
+  echo "CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y"
+  echo "CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y"
   echo "CONFIG_KPROBES=y"
   echo "CONFIG_HAVE_KPROBES=y"
   echo "CONFIG_KRETPROBES=y"
