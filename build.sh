@@ -32,7 +32,7 @@ rm -rf drivers/kernelsu KernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
 # ==================== 3. HOOKS MANUELS ====================
-echo "=== Hooks (execveat, faccessat, stat, fstat64, reboot) ==="
+echo "=== Hooks (execveat, faccessat, stat, fstat64, reboot, setresuid, sys_read, input) ==="
 
 # --- execveat ---
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
@@ -262,7 +262,7 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
-# --- setresuid (Requis par ReSukiSU quand SuSFS est présent) ---
+# --- setresuid ---
 if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
   cat > /tmp/hook_setresuid.py << 'PYEOF'
 import re
@@ -293,7 +293,7 @@ else
   echo "OK: ksu_handle_setresuid déjà présent"
 fi
 
-# --- sys_read (Requis par ReSukiSU quand SuSFS est présent) ---
+# --- sys_read ---
 if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
   cat > /tmp/hook_sys_read.py << 'PYEOF'
 import re
@@ -326,7 +326,7 @@ else
   echo "OK: ksu_handle_sys_read déjà présent"
 fi
 
-# --- input_event (Requis par ReSukiSU quand SuSFS est présent) ---
+# --- input_event ---
 if ! grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
   cat > /tmp/hook_input.py << 'PYEOF'
 import re
@@ -368,7 +368,7 @@ else
   echo "OK: ksu_handle_input_handle_event déjà présent"
 fi
 
-# ==================== 3.5. INTÉGRATION SUSFS 2.3.0 (AJOUT) ====================
+# ==================== 3.5. INTÉGRATION SUSFS 2.3.0 ====================
 echo "=== Intégration SuSFS 2.3.0 depuis cyberc3dr ==="
 cd "$GITHUB_WORKSPACE"
 rm -rf /tmp/cyber_repo
@@ -558,7 +558,7 @@ export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
 
-# Defconfig déjà présent dans le fork (ne pas écraser)
+# Defconfig
 CONFIG_NAME="vendor/lito-perf_defconfig"
 echo "Config utilisée : $CONFIG_NAME"
 
@@ -569,22 +569,6 @@ if [ ! -f "arch/arm64/configs/$CONFIG_NAME" ]; then
 fi
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
-
-# 🆕 NOUVELLE APPROCHE : Forcer les options via Kconfig
-# Désactiver l'option KSU_TOOLKIT_SUPPORT qui peut désactiver MANUAL_HOOK
-if [ -f "drivers/kernelsu/Kconfig" ]; then
-    sed -i 's/default y/default n/g' drivers/kernelsu/Kconfig
-    # S'assurer que KSU_MANUAL_HOOK est bien défini
-    if ! grep -q "config KSU_MANUAL_HOOK" drivers/kernelsu/Kconfig; then
-        cat >> drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
-
-config KSU_MANUAL_HOOK
-	bool "Manual hook mode"
-	depends on KSU
-	default y
-KCONFIG_EOF
-    fi
-fi
 
 # Options KernelSU + compat + SUSFS
 {
@@ -600,7 +584,6 @@ fi
   echo "CONFIG_COMPAT_32BIT_TIME=y"
   echo "# CONFIG_COMPAT_VDSO is not set"
   echo "# CONFIG_VDSO32 is not set"
-  # Options SuSFS
   echo "CONFIG_KSU_SUSFS=y"
   echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
   echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
@@ -620,13 +603,19 @@ fi
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# 🆕 VÉRIFICATION CRITIQUE : S'assurer que KSU_MANUAL_HOOK est bien activé
-echo "=== Vérification des configs KSU ==="
-grep "CONFIG_KSU_MANUAL_HOOK" out/.config || {
-    echo "⚠️  CONFIG_KSU_MANUAL_HOOK n'est pas activé ! Activation forcée..."
+# 🆕 FORÇAGE CRITIQUE : Garantir CONFIG_KSU_MANUAL_HOOK=y dans le .config final
+echo "=== Vérification et forçage de CONFIG_KSU_MANUAL_HOOK ==="
+if grep -q "# CONFIG_KSU_MANUAL_HOOK is not set" out/.config; then
+    echo "⚠️  CONFIG_KSU_MANUAL_HOOK désactivé ! Forçage..."
+    sed -i 's/# CONFIG_KSU_MANUAL_HOOK is not set/CONFIG_KSU_MANUAL_HOOK=y/' out/.config
+fi
+
+# Si la ligne n'existe pas du tout, on l'ajoute
+if ! grep -q "CONFIG_KSU_MANUAL_HOOK" out/.config; then
     echo "CONFIG_KSU_MANUAL_HOOK=y" >> out/.config
-    make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
-}
+fi
+
+echo "État final :"
 grep "CONFIG_KSU_MANUAL_HOOK" out/.config
 
 # ==================== 5. PATCHES ====================
