@@ -11,6 +11,14 @@ sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.l
 sudo apt-get update
 sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg
 
+# ==================== INSTALLATION RUST NIGHTLY ====================
+echo "=== Installation de Rust nightly (requis pour ksud) ==="
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly
+source "$HOME/.cargo/env"
+rustup default nightly
+rustc --version
+cargo --version
+
 cd $GITHUB_WORKSPACE
 
 # ==================== 1. CLONAGE DU NOYAU ====================
@@ -64,56 +72,6 @@ with open('fs/exec.c', 'w') as f:
 PYEOF
   python3 /tmp/hook_execveat.py
 fi
-
-# ==================== PATCH SECCOMP : Désactivation forcée ====================
-echo "=== Patch pour désactiver seccomp dans le hook execveat ==="
-python3 - << 'PYEOF'
-import re
-with open('fs/exec.c', 'r') as f:
-    content = f.read()
-
-# Vérifier si le patch est déjà appliqué
-if 'disable_seccomp_for_ksu' not in content:
-    # Chercher le hook execveat et ajouter le code de désactivation de seccomp
-    old_code = '''#ifdef CONFIG_KSU_MANUAL_HOOK
-	ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);
-#endif'''
-
-    new_code = '''#ifdef CONFIG_KSU_MANUAL_HOOK
-	ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);
-#endif
-#ifdef CONFIG_SECCOMP
-	// Désactiver seccomp pour permettre à ReSukiSU de fonctionner
-	if (current->seccomp.mode != 0) {
-		spin_lock_irq(&current->sighand->siglock);
-		current->seccomp.mode = 0;
-		current->seccomp.filter = NULL;
-		spin_unlock_irq(&current->sighand->siglock);
-	}
-#endif'''
-
-    if old_code in content:
-        content = content.replace(old_code, new_code, 1)
-        print("OK: Patch seccomp dans execveat (méthode 1)")
-    else:
-        # Méthode alternative : chercher le pattern avec regex
-        pattern = r'(#ifdef CONFIG_KSU_MANUAL_HOOK\s*\n\s*ksu_handle_execveat\(\(int \*\)AT_FDCWD, &filename, &argv, &envp, 0\);\s*\n#endif)'
-        replacement = r'''\1
-#ifdef CONFIG_SECCOMP
-	// Désactiver seccomp pour permettre à ReSukiSU de fonctionner
-	if (current->seccomp.mode != 0) {
-		spin_lock_irq(&current->sighand->siglock);
-		current->seccomp.mode = 0;
-		current->seccomp.filter = NULL;
-		spin_unlock_irq(&current->sighand->siglock);
-	}
-#endif'''
-        content = re.sub(pattern, replacement, content, count=1)
-        print("OK: Patch seccomp dans execveat (méthode 2)")
-
-with open('fs/exec.c', 'w') as f:
-    f.write(content)
-PYEOF
 
 # --- faccessat ---
 if ! grep -q "ksu_handle_faccessat" fs/open.c; then
@@ -410,6 +368,51 @@ else
   echo "OK: ksu_handle_input_handle_event déjà présent"
 fi
 
+# ==================== 3.4. AJOUT : Fonction disable_seccomp() ====================
+echo "=== Ajout de la fonction disable_seccomp() dans ReSukiSU ==="
+
+# Chercher si la fonction existe déjà dans ReSukiSU
+if ! grep -rq "disable_seccomp" drivers/kernelsu/ 2>/dev/null; then
+    echo "⚠️  Fonction disable_seccomp() non trouvée dans ReSukiSU. Ajout..."
+    
+    # Ajouter la fonction dans core_hook.c (ou ksu.c selon la version)
+    KSU_CORE_FILE=""
+    if [ -f "drivers/kernelsu/core_hook.c" ]; then
+        KSU_CORE_FILE="drivers/kernelsu/core_hook.c"
+    elif [ -f "drivers/kernelsu/ksu.c" ]; then
+        KSU_CORE_FILE="drivers/kernelsu/ksu.c"
+    fi
+    
+    if [ -n "$KSU_CORE_FILE" ]; then
+        cat >> "$KSU_CORE_FILE" << 'SECCOMP_EOF'
+
+/* Fonction pour désactiver seccomp dynamiquement */
+static void disable_seccomp(void)
+{
+	assert_spin_locked(&current->sighand->siglock);
+	// disable seccomp
+#if defined(CONFIG_GENERIC_ENTRY) &&                                           \
+	LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
+	current_thread_info()->syscall_work &= ~SYSCALL_WORK_SECCOMP;
+#else
+	current_thread_info()->flags &= ~(TIF_SECCOMP | _TIF_SECCOMP);
+#endif
+
+#ifdef CONFIG_SECCOMP
+	current->seccomp.mode = 0;
+	current->seccomp.filter = NULL;
+#else
+#endif
+}
+SECCOMP_EOF
+        echo "✅ Fonction disable_seccomp() ajoutée dans $KSU_CORE_FILE"
+    else
+        echo "❌ Fichier core_hook.c ou ksu.c non trouvé !"
+    fi
+else
+    echo "✅ Fonction disable_seccomp() déjà présente dans ReSukiSU"
+fi
+
 # ==================== 3.5. INTÉGRATION SUSFS 2.3.0 (cyberc3dr) ====================
 echo "=== Intégration SuSFS 2.3.0 depuis cyberc3dr ==="
 cd "$GITHUB_WORKSPACE"
@@ -613,6 +616,8 @@ fi
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
 # Options KernelSU + compat + SUSFS
+# ⚠️  IMPORTANT : Ne PAS désactiver CONFIG_SECCOMP ici !
+# ReSukiSU a besoin d'accéder à current->seccomp.mode et current->seccomp.filter
 {
   echo "CONFIG_KSU=y"
   echo "CONFIG_KSU_MANUAL_HOOK=y"
@@ -673,12 +678,12 @@ printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#incl
 
 echo "✅ Patches appliqués"
 
-# ==================== 6. COMPILATION DU KERNEL ====================
-echo "=== Compilation finale du kernel ==="
+# ==================== 6. COMPILATION ====================
+echo "=== Compilation finale ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
 if [ -f "out/arch/arm64/boot/Image" ]; then
-  echo "✅ Compilation du kernel réussie"
+  echo "✅ Compilation réussie"
   ls -lh out/arch/arm64/boot/
 else
   echo "❌ BUILD FAILED"
@@ -686,54 +691,11 @@ else
   exit 1
 fi
 
-# ==================== 6.5. COMPILATION DE KSUD ====================
-echo "=== Compilation de ksud (démon userspace de ReSukiSU) ==="
-cd "$GITHUB_WORKSPACE"
-
-# Cloner le repo ReSukiSU pour accéder à ksud
-rm -rf /tmp/resukisu_userspace
-git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git /tmp/resukisu_userspace
-
-# Vérifier que ksud existe
-if [ -d "/tmp/resukisu_userspace/userspace/ksud" ]; then
-    echo "✅ Dossier ksud trouvé dans ReSukiSU"
-    
-    # Installer Rust si nécessaire
-    if ! command -v rustc &> /dev/null; then
-        echo "Installation de Rust..."
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-        source "$HOME/.cargo/env"
-    fi
-    
-    # Installer les dépendances pour cross-compilation
-    sudo apt-get install -y musl-tools
-    rustup target add aarch64-unknown-linux-musl
-    
-    # Compiler ksud pour Android ARM64
-    cd /tmp/resukisu_userspace/userspace/ksud
-    cargo build --release --target aarch64-unknown-linux-musl
-    
-    # Vérifier que le binaire a été compilé
-    if [ -f "target/aarch64-unknown-linux-musl/release/ksud" ]; then
-        echo "✅ ksud compilé avec succès"
-        cp target/aarch64-unknown-linux-musl/release/ksud "$GITHUB_WORKSPACE/ksud"
-        chmod 755 "$GITHUB_WORKSPACE/ksud"
-    else
-        echo "❌ Échec de compilation de ksud"
-        ls -la target/aarch64-unknown-linux-musl/release/ || true
-        exit 1
-    fi
-else
-    echo "❌ Dossier ksud non trouvé dans ReSukiSU !"
-    echo "Structure du repo :"
-    find /tmp/resukisu_userspace -maxdepth 3 -type d | head -20
-    exit 1
-fi
-
-# ==================== 7. REPACK AVEC KSUD ====================
+# ==================== 7. REPACK ====================
 echo "=== Téléchargement des images stock ==="
 cd "$GITHUB_WORKSPACE"
 
+# 🔄 Dates mises à jour au 30 août 2026
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
   echo "Fallback mkbootimg..."
   mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
@@ -742,7 +704,7 @@ curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/bo
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
 
 if [ -f "boot-stock.img" ]; then
-  echo "=== Repack avec magiskboot + injection ksud ==="
+  echo "=== Repack avec magiskboot ==="
   mkdir -p repack
   cp boot-stock.img repack/boot.img
   wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
@@ -752,21 +714,7 @@ if [ -f "boot-stock.img" ]; then
   rm -rf Magisk-v27.0.apk lib/
   cd repack
   ./magiskboot unpack boot.img
-  
-  # Remplacer le kernel
   cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
-  
-  # 🆕 INJECTER KSUD DANS LE RAMDISK
-  echo "=== Injection de ksud dans le ramdisk ==="
-  mkdir -p ramdisk/data/adb/ksud
-  cp $GITHUB_WORKSPACE/ksud ramdisk/data/adb/ksud/ksud
-  chmod 755 ramdisk/data/adb/ksud/ksud
-  
-  # Créer le lien su dans /system/bin
-  mkdir -p ramdisk/system/bin
-  ln -sf /data/adb/ksud/ksud ramdisk/system/bin/su 2>/dev/null || true
-  
-  # Repacker avec le ramdisk modifié
   ./magiskboot repack boot.img new-boot.img
   mv new-boot.img ../final_boot.img
   cd ..
