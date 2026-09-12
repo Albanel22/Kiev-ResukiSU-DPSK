@@ -394,6 +394,10 @@ endif
 KCONFIG_EOF
 fi
 
+grep -rn "STATX_SUS_KSTAT" /tmp/cyber_repo/Patches/include/ 2>/dev/null
+grep -rn "susfs_is_current_app_uid" /tmp/cyber_repo/Patches/include/ 2>/dev/null
+grep -n "#include" fs/stat.c | head -20
+
 # ==================== 4. PATCH SIGNATURES + TACTILE ====================
 echo "=== Patch signatures modules + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
