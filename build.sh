@@ -232,6 +232,38 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
+# 5. setresuid (CORRECTION CRITIQUE : Requis par ReSukiSU)
+echo "=== Hook ksu_handle_setresuid ==="
+if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
+  cat > /tmp/hook_setresuid.py << 'PYEOF'
+import re
+with open('kernel/sys.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_setresuid' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_SUSFS
+extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
+#endif
+'''
+    pattern = r'(long __sys_setresuid)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    
+    old_code = '''	bool ruid_new, euid_new, suid_new;'''
+    new_code = '''	bool ruid_new, euid_new, suid_new;
+#ifdef CONFIG_KSU_SUSFS
+	(void)ksu_handle_setresuid(ruid, euid, suid);
+#endif'''
+    if old_code in content:
+        content = content.replace(old_code, new_code, 1)
+        print("OK: setresuid")
+with open('kernel/sys.c', 'w') as f:
+    f.write(content)
+PYEOF
+  python3 /tmp/hook_setresuid.py
+else
+  echo "OK: ksu_handle_setresuid déjà présent"
+fi
+
 # ==================== 3. INTÉGRATION SUSFS 2.3.0 ====================
 cd "$GITHUB_WORKSPACE"
 echo "=== Intégration SuSFS 2.3.0 depuis cyberc3dr ==="
