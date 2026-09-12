@@ -1,31 +1,40 @@
 #!/bin/bash
-set -e
+set -euo pipefail
+
 echo "=== Début du build ==="
 df -h
 
-sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-sudo apt-get clean
+# Nettoyage espace disque
+sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+sudo apt-get clean || true
 
 # Correction miroir Ubuntu
 sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list 2>/dev/null || true
 
 sudo apt-get update
-sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg
+sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev libssl-dev \
+  libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang llvm lld \
+  device-tree-compiler zip unzip curl git python3 mkbootimg
 
-cd $GITHUB_WORKSPACE
+cd "$GITHUB_WORKSPACE"
 
 # ==================== 1. CLONAGE DU NOYAU ====================
 echo "=== Clonage du kernel depuis le fork Albanel22 ==="
-git clone --depth=1 --branch kiev-kernelsu-susfs https://github.com/Albanel22/android_kernel_motorola_sm8250.git kernel_sources
+git clone --depth=1 --branch kiev-kernelsu-susfs \
+  https://github.com/Albanel22/android_kernel_motorola_sm8250.git kernel_sources
+
 cd kernel_sources
 git log --oneline -1
-cd "$GITHUB_WORKSPACE"
 
+# ==================== 2. INTÉGRATION ReSukiSU ====================
 echo "=== Intégration ReSukiSU ==="
-rm -rf drivers/kernelsu kernelSU susfs4ksu || true
+rm -rf drivers/kernelsu KernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
+# ==================== 3. HOOKS MANUELS ====================
 echo "=== Hooks (execveat, faccessat, stat, fstat64, reboot) ==="
+
+# --- execveat ---
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
   cat > /tmp/hook_execveat.py << 'PYEOF'
 import re
@@ -64,6 +73,7 @@ PYEOF
   python3 /tmp/hook_execveat.py
 fi
 
+# --- faccessat ---
 if ! grep -q "ksu_handle_faccessat" fs/open.c; then
   cat > /tmp/hook_faccessat.py << 'PYEOF'
 import re
@@ -102,6 +112,7 @@ PYEOF
   python3 /tmp/hook_faccessat.py
 fi
 
+# --- stat / newfstat / fstat64 ---
 if ! grep -q "ksu_handle_fstat64_ret" fs/stat.c; then
   cat > /tmp/hook_stat_complete.py << 'PYEOF'
 import re
@@ -209,6 +220,7 @@ PYEOF
   python3 /tmp/hook_stat_complete.py
 fi
 
+# --- reboot ---
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
   cat > /tmp/hook_reboot.py << 'PYEOF'
 import re
@@ -250,6 +262,7 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
+# ==================== 4. CONFIGURATION ====================
 echo "=== Configuration ==="
 export ARCH=arm64
 export SUBARCH=arm64
@@ -257,13 +270,20 @@ export CROSS_COMPILE=aarch64-linux-gnu-
 export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
-CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*lito*" -o -name "*sm8250*" | head -1)
-CONFIG_NAME=$(basename "$CONFIG")
-cp "$CONFIG" arch/arm64/configs/$CONFIG_NAME
-echo "Config utilisée: $CONFIG"
+
+# Defconfig déjà présent dans le fork (ne pas écraser)
+CONFIG_NAME="vendor/lito-perf_defconfig"
+echo "Config utilisée : $CONFIG_NAME"
+
+if [ ! -f "arch/arm64/configs/$CONFIG_NAME" ]; then
+  echo "❌ $CONFIG_NAME introuvable dans le fork !"
+  ls -la arch/arm64/configs/vendor/ || true
+  exit 1
+fi
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
+# Options KernelSU + compat
 {
   echo "CONFIG_KSU=y"
   echo "CONFIG_KSU_MANUAL_HOOK=y"
@@ -281,6 +301,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
+# ==================== 5. PATCHES ====================
 echo "=== Patch signatures modules + tactile (APRÈS olddefconfig) ==="
 
 # Force-pass des signatures modules
@@ -293,6 +314,7 @@ printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#incl
 
 echo "✅ Patches appliqués"
 
+# ==================== 6. COMPILATION ====================
 echo "=== Compilation finale ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
@@ -301,16 +323,26 @@ if [ -f "out/arch/arm64/boot/Image" ]; then
   ls -lh out/arch/arm64/boot/
 else
   echo "❌ BUILD FAILED"
-  grep -i "error:" build.log | head -10
+  grep -iE "error:|fatal error:" build.log | head -20
   exit 1
 fi
 
+# ==================== 7. REPACK ====================
 echo "=== Téléchargement des images stock ==="
-cd $GITHUB_WORKSPACE
+cd "$GITHUB_WORKSPACE"
 
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
   echo "Fallback mkbootimg..."
-  mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
+  mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image \
+    --ramdisk /dev/null \
+    --output final_boot.img \
+    --header_version 2 \
+    --pagesize 4096 \
+    --base 0x00000000 \
+    --kernel_offset 0x00008000 \
+    --ramdisk_offset 0x01000000 \
+    --tags_offset 0x00000100 \
+    --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
 
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
@@ -326,17 +358,19 @@ if [ -f "boot-stock.img" ]; then
   rm -rf Magisk-v27.0.apk lib/
   cd repack
   ./magiskboot unpack boot.img
-  cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
+  cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
   ./magiskboot repack boot.img new-boot.img
   mv new-boot.img ../final_boot.img
   cd ..
 fi
 
+# ==================== 8. SORTIE ====================
 echo "=== Copie vers output ==="
 mkdir -p output
-cp final_boot.img output/ReSukiSU-boot.img
+cp final_boot.img output/ReSukiSU-boot.img 2>/dev/null || true
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
-cp kernel_sources/build.log output/
+cp kernel_sources/build.log output/ 2>/dev/null || true
+cp kernel_sources/out/arch/arm64/boot/Image output/ 2>/dev/null || true
 
 echo "=== BUILD TERMINÉ ==="
 ls -lh output/
