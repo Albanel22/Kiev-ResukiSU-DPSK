@@ -14,7 +14,7 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 cd $GITHUB_WORKSPACE
 
 echo "=== Clonage du kernel LineageOS sm8250 ==="
-git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
+git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git -b kiev-kernelsu-susfs --depth=1 kernel_sources
 cd kernel_sources
 
 echo "=== Intégration ReSukiSU ==="
