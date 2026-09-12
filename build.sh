@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD : ReSukiSU + SuSFS (JackA1ltman) sur kiev ==="
+echo "=== BUILD : ReSukiSU + SuSFS (JackA1ltman) sur kiev — cible RBC/Desjardins ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -25,12 +25,11 @@ fi
 cd $GITHUB_WORKSPACE
 
 # ==================== 1. CLONAGE DU NOYAU ====================
-echo "=== Clonage du kernel depuis le fork Albanel22 (branche kiev-kernelsu-susfs) ==="
-git clone --depth=1 --branch kiev-kernelsu-susfs https://github.com/Albanel22/android_kernel_motorola_sm8250.git kernel_sources
+echo "=== Clonage du kernel (fork Albanel22, branche kiev-kernelsu-susfs) ==="
+git clone --depth=1 --branch kiev-kernelsu-susfs \
+    https://github.com/Albanel22/android_kernel_motorola_sm8250.git kernel_sources
 cd kernel_sources
 git log --oneline -1
-cd "$GITHUB_WORKSPACE"
-
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
 # ==================== 2. INTÉGRATION RESUKISU ====================
@@ -121,7 +120,6 @@ echo "=== Injection hook stat complet ==="
 if ! grep -q "ksu_handle_fstat64_ret" fs/stat.c; then
   cat > /tmp/hook_stat_complete.py << 'PYEOF'
 import re
-
 with open('fs/stat.c', 'r') as f:
     content = f.read()
 
@@ -229,10 +227,8 @@ echo "=== Injection hook sys_reboot ==="
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
   cat > /tmp/hook_reboot.py << 'PYEOF'
 import re
-
 with open('kernel/reboot.c', 'r') as f:
     content = f.read()
-
 if 'ksu_handle_sys_reboot' not in content:
     extern_decl = '''
 #ifdef CONFIG_KSU
@@ -241,17 +237,14 @@ extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void 
 '''
     pattern = r'(SYSCALL_DEFINE4\(reboot)'
     content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-
     old_code = '''	char buffer[256];
 	int ret = 0;'''
-
     new_code = '''	char buffer[256];
 	int ret = 0;
 
 #ifdef CONFIG_KSU
 	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
 #endif'''
-
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
         print("OK: sys_reboot")
@@ -260,7 +253,6 @@ extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void 
         replacement = r'\1\n#ifdef CONFIG_KSU\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif'
         content = re.sub(pattern, replacement, content, count=1)
         print("OK: sys_reboot (alternatif)")
-
 with open('kernel/reboot.c', 'w') as f:
     f.write(content)
 PYEOF
@@ -272,9 +264,9 @@ echo "✅ Hooks ReSukiSU appliqués"
 # ==================== 4. SUSFS (JackA1ltman) ====================
 cd "$GITHUB_WORKSPACE"
 echo "=== Téléchargement SuSFS JackA1ltman ==="
-
 rm -rf /tmp/jack_repo || true
-git clone --depth=1 --branch mainline https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
+git clone --depth=1 --branch mainline \
+    https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
 
 SUSFS_PATCH="/tmp/jack_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 if [ ! -f "$SUSFS_PATCH" ]; then
@@ -287,7 +279,6 @@ echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
 cd "$GITHUB_WORKSPACE/kernel_sources"
 patch -p1 < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
-# Copier les fichiers SuSFS complets
 if [ -d "/tmp/jack_repo/Patches/fs" ]; then
     cp -r /tmp/jack_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
@@ -295,7 +286,7 @@ if [ -d "/tmp/jack_repo/Patches/include/linux" ]; then
     cp -r /tmp/jack_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
-# ==================== 4b. DIAGNOSTIC ET APPLICATION DES .rej ====================
+# ==================== 4b. DIAGNOSTIC .rej ====================
 echo ""
 echo "======================================"
 echo "=== FICHIERS .rej DÉTECTÉS ==="
@@ -309,7 +300,6 @@ if [ -n "$REJ_FILES" ]; then
         cat "$rej"
         echo ""
         echo "--- FIN DE $rej ---"
-        echo ""
     done
 else
     echo "✅ Aucun fichier .rej détecté"
@@ -317,16 +307,14 @@ fi
 echo "======================================"
 echo ""
 
-# NE PAS SUPPRIMER les .rej (pour diagnostic), mais on peut supprimer les .orig
 find . -name "*.orig" -type f -delete 2>/dev/null || true
 
-# Vérifier la version SuSFS
 if [ -f "include/linux/susfs.h" ]; then
     SUSFS_VER=$(grep -oP 'SUSFS_VERSION "\K[^"]+' include/linux/susfs.h | head -1)
     echo "✅ SuSFS version détectée : $SUSFS_VER"
 fi
 
-# Correction FS/Makefile
+# FS/Makefile
 if [ -f "fs/Makefile" ]; then
     grep -q "susfs.o" fs/Makefile || echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
     if [ -f "fs/sus_su.c" ]; then
@@ -340,7 +328,7 @@ if [ -f "fs/proc/task_mmu.c" ]; then
     echo "✅ Correctif task_mmu.c appliqué"
 fi
 
-# Ajout des symboles SusFS manquants
+# Symboles SusFS manquants
 if [ -f "fs/susfs.c" ] && ! grep -q "susfs_ksu_sid = 0" fs/susfs.c; then
     cat >> fs/susfs.c << 'SUSFS_EOF'
 
@@ -362,6 +350,100 @@ SUSFS_EOF
 fi
 
 echo "✅ SuSFS intégré (JackA1ltman)"
+
+# ==================== 4c. RÉAPPLICATION MANUELLE DES .rej ====================
+# Cible : RBC lit /proc/self/mountinfo → SUS_MOUNT obligatoire
+#         RBC lit ro.boot.verifiedbootstate → SPOOF_CMDLINE obligatoire
+echo ""
+echo "=== Réapplication manuelle des hunks rejetés (SUS_MOUNT) ==="
+
+# --- namespace.c : SUS_MOUNT ---
+if ! grep -q "susfs_is_current_ksu_domain" fs/namespace.c; then
+  echo "→ Patch namespace.c pour SUS_MOUNT..."
+  cat > /tmp/fix_namespace.py << 'PYEOF'
+with open('fs/namespace.c', 'r') as f:
+    c = f.read()
+
+# 1. Include susfs_def.h
+if '#include <linux/susfs_def.h>' not in c:
+    anchor = '#include <linux/sched/task.h>'
+    if anchor in c:
+        c = c.replace(anchor, anchor + '\n#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif // #ifdef CONFIG_KSU_SUSFS', 1)
+        print("  OK: include susfs_def.h")
+    else:
+        print("  WARN: anchor include introuvable")
+
+# 2. Bloc extern + macro
+if 'CL_COPY_MNT_NS' not in c:
+    anchor = '#include "internal.h"'
+    if anchor in c:
+        block = anchor + '''
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+extern bool susfs_is_current_ksu_domain(void);
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+
+#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */
+
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+'''
+        c = c.replace(anchor, block, 1)
+        print("  OK: bloc extern SUS_MOUNT")
+    else:
+        print("  WARN: anchor internal.h introuvable")
+
+# 3. Hook vfs_kern_mount
+if 'susfs_alloc_non_unshare_ksu_vfsmnt' not in c:
+    old = '''	if (!type)
+		return ERR_PTR(-ENODEV);
+
+	mnt = alloc_vfsmnt(name);'''
+    new = '''	if (!type)
+		return ERR_PTR(-ENODEV);
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	// - We will just stop checking for ksu process if /sdcard/Android is accessible,
+	//   for the sake of performance
+	if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {
+		if (susfs_is_current_ksu_domain()) {
+			mnt = susfs_alloc_non_unshare_ksu_vfsmnt(name ?:"none");
+			goto bypass_orig_flow;
+		}
+	}
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+
+	mnt = alloc_vfsmnt(name);
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+bypass_orig_flow:
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT'''
+    if old in c:
+        c = c.replace(old, new, 1)
+        print("  OK: hook vfs_kern_mount")
+    else:
+        print("  WARN: pattern vfs_kern_mount introuvable")
+
+with open('fs/namespace.c', 'w') as f:
+    f.write(c)
+PYEOF
+  python3 /tmp/fix_namespace.py
+fi
+
+# Vérification stricte : SUS_MOUNT doit être présent
+if ! grep -q "susfs_alloc_non_unshare_ksu_vfsmnt" fs/namespace.c; then
+    echo "❌ ÉCHEC : SUS_MOUNT n'a pas pu être patché dans namespace.c"
+    echo "   RBC va détecter les montages KSU → build inutile"
+    exit 1
+fi
+echo "✅ SUS_MOUNT opérationnel (namespace.c patché)"
+
+# --- task_mmu.c : SUS_MAP désactivé → on ignore le .rej volontairement ---
+if [ -f "fs/proc/task_mmu.c.rej" ]; then
+    echo "ℹ️  task_mmu.c.rej ignoré (SUS_MAP désactivé — inutile pour banque)"
+    rm -f fs/proc/task_mmu.c.rej
+fi
+
+echo "✅ Hunks rejetés traités"
 
 # ==================== 5. PATCH SIGNATURES MODULES + TACTILE ====================
 echo "=== Patch signatures modules + tactile ==="
@@ -398,21 +480,20 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "# CONFIG_COMPAT_VDSO is not set"
   echo "# CONFIG_VDSO32 is not set"
   echo ""
-  echo "# SuSFS"
+  echo "# SuSFS — config ciblée RBC/Desjardins"
   echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
   echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
   echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
-  echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
+  echo "# CONFIG_KSU_SUSFS_SUS_MAP is not set"           # inutile pour banque
   echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
-  echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
+  echo "# CONFIG_KSU_SUSFS_ENABLE_LOG is not set"         # pas de fuite dmesg
   echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
-  echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
+  echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"   # critique RBC
   echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
 } >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# Forcer les options critiques
 ./scripts/config --file out/.config --enable KSU
 ./scripts/config --file out/.config --enable KSU_SUSFS
 ./scripts/config --file out/.config --enable THREAD_INFO_IN_TASK
@@ -422,14 +503,15 @@ echo "CONFIG_THREAD_INFO_IN_TASK=y" >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# Diagnostic
 echo ""
-echo "=== DIAGNOSTIC FINAL ==="
-grep -E "CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_THREAD_INFO_IN_TASK=" out/.config
+echo "=== DIAGNOSTIC FINAL CONFIG ==="
+grep -E "CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_THREAD_INFO_IN_TASK=|CONFIG_KSU_SUSFS_SUS_MOUNT=|CONFIG_KSU_SUSFS_SUS_MAP=|CONFIG_KSU_SUSFS_SPOOF_CMDLINE" out/.config
 echo ""
 grep -q "CONFIG_KSU=y" out/.config && echo "✅ CONFIG_KSU=y" || (echo "❌ KSU!=y" && exit 1)
 grep -q "CONFIG_KSU_SUSFS=y" out/.config && echo "✅ CONFIG_KSU_SUSFS=y" || (echo "❌ SUSFS!=y" && exit 1)
 grep -q "CONFIG_THREAD_INFO_IN_TASK=y" out/.config && echo "✅ THREAD_INFO_IN_TASK=y" || (echo "❌ THREAD_INFO!=y" && exit 1)
+grep -q "CONFIG_KSU_SUSFS_SUS_MOUNT=y" out/.config && echo "✅ SUS_MOUNT=y (critique RBC)" || (echo "❌ SUS_MOUNT!=y — RBC va détecter" && exit 1)
+grep -q "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" out/.config && echo "✅ SPOOF_CMDLINE=y (critique RBC)" || (echo "❌ SPOOF_CMDLINE!=y" && exit 1)
 
 # ==================== 7. COMPILATION ====================
 echo "=== Compilation ==="
@@ -478,7 +560,6 @@ cp final_boot.img output/ReSukiSU-SuSFS-boot.img 2>/dev/null || true
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 
-# Copier aussi les .rej dans les artefacts pour analyse
 mkdir -p output/rej_files
 find kernel_sources -name "*.rej" -exec cp {} output/rej_files/ \; 2>/dev/null || true
 
