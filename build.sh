@@ -232,7 +232,7 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
-# ==================== 3. INTÉGRATION SUSFS 2.3.0 (AJOUTÉ) ====================
+# ==================== 3. INTÉGRATION SUSFS 2.3.0 ====================
 cd "$GITHUB_WORKSPACE"
 echo "=== Intégration SuSFS 2.3.0 depuis cyberc3dr ==="
 rm -rf /tmp/cyber_repo
@@ -332,7 +332,31 @@ if [ -f "fs/susfs.c" ]; then
     fi
 fi
 
-# 7. KCONFIG SUSFS
+# 7. 🆕 CORRECTION : Inclusion susfs_def.h dans fs/stat.c
+if [ -f "fs/stat.c" ] && ! grep -q "susfs_def.h" fs/stat.c; then
+    echo "🔧 Ajout de l'inclusion susfs_def.h dans fs/stat.c..."
+    sed -i '1i #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif' fs/stat.c
+fi
+
+# 8. 🆕 CORRECTION : Variable 'vma' non utilisée dans fs/proc/task_mmu.c
+if [ -f "fs/proc/task_mmu.c" ]; then
+    echo "🔧 Correction de la variable 'vma' non utilisée dans task_mmu.c..."
+    sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
+fi
+
+# 9. Correction namespace.c (inclusions et extern)
+python3 - << 'PYEOF'
+import re
+with open('fs/namespace.c', 'r') as f: content = f.read()
+content = re.sub(r'^\s*n(?=#ifdef|#endif|#include|#define|extern)', '', content, flags=re.MULTILINE)
+if '#include <linux/susfs_def.h>' not in content:
+    content = content.replace('#include <linux/sched/task.h>', '#include <linux/sched/task.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif')
+if 'extern bool susfs_is_current_ksu_domain' not in content:
+    content = content.replace('#include "pnode.h"', '#include "pnode.h"\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif')
+with open('fs/namespace.c', 'w') as f: f.write(content)
+PYEOF
+
+# ==================== 4. KCONFIG SUSFS ====================
 if [ -f "drivers/kernelsu/Kconfig" ] && ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
     cat >> drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
 menuconfig KSU_SUSFS
@@ -386,12 +410,12 @@ endif
 KCONFIG_EOF
 fi
 
-# ==================== 4. PATCH SIGNATURES + TACTILE ====================
+# ==================== 5. PATCH SIGNATURES + TACTILE ====================
 echo "=== Patch signatures modules + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
-# ==================== 5. CONFIGURATION (CIBLAGE EXPLICITE) ====================
+# ==================== 6. CONFIGURATION (CIBLAGE EXPLICITE) ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
@@ -399,7 +423,6 @@ export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
 
-# Ciblage explicite au lieu du find aléatoire
 CONFIG_NAME="vendor/lito-perf_defconfig"
 if [ ! -f "arch/arm64/configs/$CONFIG_NAME" ]; then
     CONFIG_NAME="lito-perf_defconfig"
@@ -422,7 +445,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_COMPAT_32BIT_TIME=y"
   echo "# CONFIG_COMPAT_VDSO is not set"
   echo "# CONFIG_VDSO32 is not set"
-  # Options SuSFS (AJOUTÉES)
   echo "CONFIG_KSU_SUSFS=y"
   echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
   echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
@@ -442,12 +464,10 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# Correction de la variable 'vma' non utilisée dans task_mmu.c
-if [ -f "fs/proc/task_mmu.c" ]; then
-    echo "🔧 Correction de la variable 'vma' non utilisée dans task_mmu.c..."
-    sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
-fi
+echo "=== Vérification des configs SusFS ==="
+grep "CONFIG_KSU_SUSFS" out/.config | head -20
 
+# ==================== 7. COMPILATION ====================
 echo "=== Compilation ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
@@ -460,7 +480,7 @@ else
   exit 1
 fi
 
-# ==================== 6. REPACK ====================
+# ==================== 8. REPACK ====================
 echo "=== Téléchargement des images stock ==="
 cd $GITHUB_WORKSPACE
 
