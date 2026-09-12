@@ -570,6 +570,22 @@ fi
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
+# 🆕 NOUVELLE APPROCHE : Forcer les options via Kconfig
+# Désactiver l'option KSU_TOOLKIT_SUPPORT qui peut désactiver MANUAL_HOOK
+if [ -f "drivers/kernelsu/Kconfig" ]; then
+    sed -i 's/default y/default n/g' drivers/kernelsu/Kconfig
+    # S'assurer que KSU_MANUAL_HOOK est bien défini
+    if ! grep -q "config KSU_MANUAL_HOOK" drivers/kernelsu/Kconfig; then
+        cat >> drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
+
+config KSU_MANUAL_HOOK
+	bool "Manual hook mode"
+	depends on KSU
+	default y
+KCONFIG_EOF
+    fi
+fi
+
 # Options KernelSU + compat + SUSFS
 {
   echo "CONFIG_KSU=y"
@@ -603,6 +619,15 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 } >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+
+# 🆕 VÉRIFICATION CRITIQUE : S'assurer que KSU_MANUAL_HOOK est bien activé
+echo "=== Vérification des configs KSU ==="
+grep "CONFIG_KSU_MANUAL_HOOK" out/.config || {
+    echo "⚠️  CONFIG_KSU_MANUAL_HOOK n'est pas activé ! Activation forcée..."
+    echo "CONFIG_KSU_MANUAL_HOOK=y" >> out/.config
+    make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+}
+grep "CONFIG_KSU_MANUAL_HOOK" out/.config
 
 # ==================== 5. PATCHES ====================
 echo "=== Patch signatures modules + tactile (APRÈS olddefconfig) ==="
