@@ -6,30 +6,23 @@ df -h
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 sudo apt-get clean
 
-# Correction du miroir Ubuntu (Azure est lent)
-echo "=== Correction du miroir Ubuntu ==="
+# Correction miroir Ubuntu
 sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list 2>/dev/null || true
-sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list.d/*.list 2>/dev/null || true
 
 sudo apt-get update
 sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg
 
 cd $GITHUB_WORKSPACE
 
-# ==================== 1. CLONAGE DU NOYAU DEPUIS TON FORK ====================
-echo "=== Clonage du kernel depuis le fork Albanel22 (branche kiev-kernelsu-susfs) ==="
-git clone --depth=1 --branch kiev-kernelsu-susfs https://github.com/Albanel22/android_kernel_motorola_sm8250.git kernel_sources
+echo "=== Clonage du kernel ==="
+git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
 cd kernel_sources
-git log --oneline -1
-cd "$GITHUB_WORKSPACE"
 
-cd "$GITHUB_WORKSPACE/kernel_sources"
-
-echo "=== Intégration ReSukiSU via setup.sh ==="
+echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-echo "=== Injection hook execveat ==="
+echo "=== Hooks (execveat, faccessat, stat, fstat64, reboot) ==="
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
   cat > /tmp/hook_execveat.py << 'PYEOF'
 import re
@@ -68,7 +61,6 @@ PYEOF
   python3 /tmp/hook_execveat.py
 fi
 
-echo "=== Injection hook faccessat ==="
 if ! grep -q "ksu_handle_faccessat" fs/open.c; then
   cat > /tmp/hook_faccessat.py << 'PYEOF'
 import re
@@ -107,7 +99,6 @@ PYEOF
   python3 /tmp/hook_faccessat.py
 fi
 
-echo "=== Injection hook stat complet ==="
 if ! grep -q "ksu_handle_fstat64_ret" fs/stat.c; then
   cat > /tmp/hook_stat_complete.py << 'PYEOF'
 import re
@@ -215,7 +206,6 @@ PYEOF
   python3 /tmp/hook_stat_complete.py
 fi
 
-echo "=== Injection hook sys_reboot ==="
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
   cat > /tmp/hook_reboot.py << 'PYEOF'
 import re
@@ -257,18 +247,6 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
-echo "=== Patch signatures modules + tactile ==="
-
-# Force-pass des signatures modules
-echo "Patch signatures modules..."
-sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
-
-# Patch tactile Motorola
-echo "Patch tactile..."
-printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
-
-echo "✅ Patches appliqués"
-
 echo "=== Configuration ==="
 export ARCH=arm64
 export SUBARCH=arm64
@@ -300,7 +278,19 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-echo "=== Compilation ==="
+echo "=== Patch signatures modules + tactile (APRÈS olddefconfig) ==="
+
+# Force-pass des signatures modules
+echo "Patch signatures modules..."
+sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
+
+# Patch tactile Motorola
+echo "Patch tactile..."
+printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+
+echo "✅ Patches appliqués"
+
+echo "=== Compilation finale ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
 if [ -f "out/arch/arm64/boot/Image" ]; then
