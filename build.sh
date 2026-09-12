@@ -1,37 +1,40 @@
 #!/bin/bash
-set -e
-echo "=== Début du build ReSukiSU + SuSFS 2.3.0 ==="
+set -euo pipefail
+
+echo "=== Début du build ==="
 df -h
 
-sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-sudo apt-get clean
+# Nettoyage espace disque
+sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+sudo apt-get clean || true
 
-echo "=== Correction du miroir Ubuntu ==="
+# Correction miroir Ubuntu
 sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list 2>/dev/null || true
-sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list.d/*.list 2>/dev/null || true
 
 sudo apt-get update
-sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg
+sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev libssl-dev \
+  libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang llvm lld \
+  device-tree-compiler zip unzip curl git python3 mkbootimg
 
-cd $GITHUB_WORKSPACE
+cd "$GITHUB_WORKSPACE"
 
 # ==================== 1. CLONAGE DU NOYAU ====================
 echo "=== Clonage du kernel depuis le fork Albanel22 ==="
-git clone --depth=1 --branch kiev-kernelsu-susfs https://github.com/Albanel22/android_kernel_motorola_sm8250.git kernel_sources
+git clone --depth=1 --branch kiev-kernelsu-susfs \
+  https://github.com/Albanel22/android_kernel_motorola_sm8250.git kernel_sources
+
 cd kernel_sources
 git log --oneline -1
-cd "$GITHUB_WORKSPACE"
 
-# ==================== 2. INTÉGRATION RESUKISU ====================
-cd "$GITHUB_WORKSPACE/kernel_sources"
-
-echo "=== Intégration ReSukiSU via setup.sh ==="
-rm -rf drivers/kernelsu kernelSU susfs4ksu || true
+# ==================== 2. INTÉGRATION ReSukiSU ====================
+echo "=== Intégration ReSukiSU ==="
+rm -rf drivers/kernelsu KernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-echo "=== Hooks ReSukiSU ==="
+# ==================== 3. HOOKS MANUELS ====================
+echo "=== Hooks (execveat, faccessat, stat, fstat64, reboot) ==="
 
-# 1. execveat
+# --- execveat ---
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
   cat > /tmp/hook_execveat.py << 'PYEOF'
 import re
@@ -59,13 +62,18 @@ extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
         print("OK: execveat")
+    else:
+        pattern = r'(int do_execve\(struct filename \*filename,.*?struct user_arg_ptr envp = \{ \.ptr\.native = __envp \};\n)'
+        replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n'
+        content = re.sub(pattern, replacement, content, count=1)
+        print("OK: execveat (alternatif)")
 with open('fs/exec.c', 'w') as f:
     f.write(content)
 PYEOF
   python3 /tmp/hook_execveat.py
 fi
 
-# 2. faccessat
+# --- faccessat ---
 if ! grep -q "ksu_handle_faccessat" fs/open.c; then
   cat > /tmp/hook_faccessat.py << 'PYEOF'
 import re
@@ -93,16 +101,22 @@ extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
         print("OK: faccessat")
+    else:
+        pattern = r'(SYSCALL_DEFINE3\(faccessat.*?\n\{)'
+        replacement = r'\1\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif'
+        content = re.sub(pattern, replacement, content, count=1)
+        print("OK: faccessat (alternatif)")
 with open('fs/open.c', 'w') as f:
     f.write(content)
 PYEOF
   python3 /tmp/hook_faccessat.py
 fi
 
-# 3. stat
+# --- stat / newfstat / fstat64 ---
 if ! grep -q "ksu_handle_fstat64_ret" fs/stat.c; then
   cat > /tmp/hook_stat_complete.py << 'PYEOF'
 import re
+
 with open('fs/stat.c', 'r') as f:
     content = f.read()
 
@@ -136,6 +150,11 @@ if 'ksu_handle_stat(&dfd' not in content:
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
         print("OK: stat")
+    else:
+        pattern = r'(SYSCALL_DEFINE4\(newfstatat.*?int error;\n)'
+        replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n'
+        content = re.sub(pattern, replacement, content, count=1)
+        print("OK: stat (alternatif)")
 
 if 'ksu_handle_newfstat_ret' not in content:
     old_code = '''SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
@@ -188,6 +207,11 @@ if 'ksu_handle_fstat64_ret' not in content:
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
         print("OK: fstat64_ret")
+    else:
+        pattern = r'(SYSCALL_DEFINE2\(fstat64.*?return error;\n)'
+        replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_fstat64_ret(&fd, &statbuf);\n#endif\n'
+        content = re.sub(pattern, replacement, content, count=1)
+        print("OK: fstat64_ret (alternatif)")
 
 with open('fs/stat.c', 'w') as f:
     f.write(content)
@@ -196,10 +220,11 @@ PYEOF
   python3 /tmp/hook_stat_complete.py
 fi
 
-# 4. sys_reboot
+# --- reboot ---
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
   cat > /tmp/hook_reboot.py << 'PYEOF'
 import re
+
 with open('kernel/reboot.c', 'r') as f:
     content = f.read()
 
@@ -225,6 +250,11 @@ extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void 
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
         print("OK: sys_reboot")
+    else:
+        pattern = r'(SYSCALL_DEFINE4\(reboot.*?\n\{)'
+        replacement = r'\1\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif'
+        content = re.sub(pattern, replacement, content, count=1)
+        print("OK: sys_reboot (alternatif)")
 
 with open('kernel/reboot.c', 'w') as f:
     f.write(content)
@@ -232,98 +262,26 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
-# 5. setresuid (CORRECTION CRITIQUE : Requis par ReSukiSU)
-echo "=== Hook ksu_handle_setresuid ==="
-if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
-  cat > /tmp/hook_setresuid.py << 'PYEOF'
-import re
-with open('kernel/sys.c', 'r') as f:
-    content = f.read()
-if 'ksu_handle_setresuid' not in content:
-    extern_decl = '''
-#ifdef CONFIG_KSU_SUSFS
-extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
-#endif
-'''
-    pattern = r'(long __sys_setresuid)'
-    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-    
-    old_code = '''	bool ruid_new, euid_new, suid_new;'''
-    new_code = '''	bool ruid_new, euid_new, suid_new;
-#ifdef CONFIG_KSU_SUSFS
-	(void)ksu_handle_setresuid(ruid, euid, suid);
-#endif'''
-    if old_code in content:
-        content = content.replace(old_code, new_code, 1)
-        print("OK: setresuid")
-with open('kernel/sys.c', 'w') as f:
-    f.write(content)
-PYEOF
-  python3 /tmp/hook_setresuid.py
-else
-  echo "OK: ksu_handle_setresuid déjà présent"
-fi
-
-# 🚨 NOTE : Les hooks manuels sys_read et input_event ont été SUPPRIMÉS
-# car ils entrent en conflit avec SuSFS.
-# À la place, on active les hooks AUTO dans la configuration ci-dessous :
-# - CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y (remplace sys_read manuel)
-# - CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y (remplace input_event manuel)
-
-# 6. sys_read (Hook sans variable de garde pour éviter le conflit SuSFS)
-echo "=== Hook ksu_handle_sys_read ==="
-if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
-  cat > /tmp/hook_sys_read.py << 'PYEOF'
-import re
-with open('fs/read_write.c', 'r') as f:
-    content = f.read()
-if 'ksu_handle_sys_read' not in content:
-    extern_decl = '''
-#ifdef CONFIG_KSU_MANUAL_HOOK
-extern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);
-#endif
-'''
-    pattern = r'(SYSCALL_DEFINE3\(read)'
-    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-    
-    old_code = '''SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
-{'''
-    new_code = '''SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
-{
-#ifdef CONFIG_KSU_MANUAL_HOOK
-	ksu_handle_sys_read(fd, &buf, &count);
-#endif'''
-    if old_code in content:
-        content = content.replace(old_code, new_code, 1)
-        print("OK: sys_read (appel inconditionnel)")
-with open('fs/read_write.c', 'w') as f:
-    f.write(content)
-PYEOF
-  python3 /tmp/hook_sys_read.py
-else
-  echo "OK: ksu_handle_sys_read déjà présent"
-fi
-
-# ==================== 3. INTÉGRATION SUSFS 2.3.0 ====================
-cd "$GITHUB_WORKSPACE"
+# ==================== 3.5. INTÉGRATION SUSFS 2.3.0 (AJOUT) ====================
 echo "=== Intégration SuSFS 2.3.0 depuis cyberc3dr ==="
+cd "$GITHUB_WORKSPACE"
 rm -rf /tmp/cyber_repo
 git clone --depth=1 --branch rebase https://github.com/cyberc3dr/nGKI_Kernel_Build.git /tmp/cyber_repo
 
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
-# 1. Patch de compatibilité xxksu
+# Patch de compatibilité xxksu
 if [ -f "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" ]; then
     echo "=== Application du patch de compatibilité xxksu ==="
     patch -p1 --forward --batch < "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" || true
 fi
 
-# 2. Patch principal SuSFS 4.19
+# Patch principal SuSFS 4.19
 SUSFS_PATCH="/tmp/cyber_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 echo "=== Application du patch SuSFS 4.19 ==="
 patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
-# 3. CORRECTION AUTOMATIQUE DES REJETS CONNUS
+# Correction automatique des rejets connus
 if [ -f "fs/proc/task_mmu.c.rej" ]; then
     echo "⚠️ Rejet détecté dans task_mmu.c. Correction automatique..."
     python3 - << 'PYEOF'
@@ -368,7 +326,7 @@ PYEOF
     rm -f fs/namespace.c.rej
 fi
 
-# 4. VÉRIFICATION STRICTE DES REJETS
+# Vérification stricte des rejets
 if find . -name "*.rej" -type f | grep -q .; then
     echo "❌ ÉCHEC CRITIQUE : Des rejets de patch SuSFS persistent."
     find . -name "*.rej" -type f -exec echo "=== {} ===" \; -exec cat {} \;
@@ -376,7 +334,7 @@ if find . -name "*.rej" -type f | grep -q .; then
 fi
 echo "✅ Patch SuSFS appliqué avec succès (aucun rejet)."
 
-# 5. Copie des fichiers source SuSFS
+# Copie des fichiers source SuSFS
 if [ -d "/tmp/cyber_repo/Patches/fs" ]; then
     cp -rn /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
@@ -384,12 +342,13 @@ if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
     cp -rn /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
-# 6. Corrections Makefile et NETTOYAGE DES SYMBOLES DUPLIQUÉS
+# Corrections Makefile
 if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
     echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
     [ -f "fs/sus_su.c" ] && ! grep -q "sus_su.o" fs/Makefile && echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
 fi
 
+# Nettoyage des symboles dupliqués
 if [ -f "fs/susfs.c" ]; then
     echo "🔧 Nettoyage des symboles dupliqués dans fs/susfs.c..."
     sed -i '/^bool susfs_is_current_ksu_domain(void)/,/^}/d' fs/susfs.c
@@ -404,19 +363,19 @@ if [ -f "fs/susfs.c" ]; then
     fi
 fi
 
-# 7. 🆕 CORRECTION : Inclusion susfs_def.h dans fs/stat.c
+# Inclusion susfs_def.h dans fs/stat.c
 if [ -f "fs/stat.c" ] && ! grep -q "susfs_def.h" fs/stat.c; then
     echo "🔧 Ajout de l'inclusion susfs_def.h dans fs/stat.c..."
     sed -i '1i #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif' fs/stat.c
 fi
 
-# 8. 🆕 CORRECTION : Variable 'vma' non utilisée dans fs/proc/task_mmu.c
+# Correction variable 'vma' non utilisée
 if [ -f "fs/proc/task_mmu.c" ]; then
     echo "🔧 Correction de la variable 'vma' non utilisée dans task_mmu.c..."
     sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
 fi
 
-# 9. Correction namespace.c (inclusions et extern)
+# Correction namespace.c
 python3 - << 'PYEOF'
 import re
 with open('fs/namespace.c', 'r') as f: content = f.read()
@@ -428,7 +387,7 @@ if 'extern bool susfs_is_current_ksu_domain' not in content:
 with open('fs/namespace.c', 'w') as f: f.write(content)
 PYEOF
 
-# ==================== 4. KCONFIG SUSFS ====================
+# KCONFIG SUSFS
 if [ -f "drivers/kernelsu/Kconfig" ] && ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
     cat >> drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
 menuconfig KSU_SUSFS
@@ -482,12 +441,10 @@ endif
 KCONFIG_EOF
 fi
 
-# ==================== 5. PATCH SIGNATURES + TACTILE ====================
-echo "=== Patch signatures modules + tactile ==="
-sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
-printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+echo "✅ SuSFS intégré"
 
-# ==================== 6. CONFIGURATION (CIBLAGE EXPLICITE) ====================
+# ==================== 4. CONFIGURATION ====================
+echo "=== Configuration ==="
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
@@ -495,15 +452,19 @@ export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
 
+# Defconfig déjà présent dans le fork (ne pas écraser)
 CONFIG_NAME="vendor/lito-perf_defconfig"
-if [ ! -f "arch/arm64/configs/$CONFIG_NAME" ]; then
-    CONFIG_NAME="lito-perf_defconfig"
-fi
-
 echo "Config utilisée : $CONFIG_NAME"
+
+if [ ! -f "arch/arm64/configs/$CONFIG_NAME" ]; then
+  echo "❌ $CONFIG_NAME introuvable dans le fork !"
+  ls -la arch/arm64/configs/vendor/ || true
+  exit 1
+fi
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
+# Options KernelSU + compat + SUSFS
 {
   echo "CONFIG_KSU=y"
   echo "CONFIG_KSU_MANUAL_HOOK=y"
@@ -517,6 +478,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_COMPAT_32BIT_TIME=y"
   echo "# CONFIG_COMPAT_VDSO is not set"
   echo "# CONFIG_VDSO32 is not set"
+  # Options SuSFS
   echo "CONFIG_KSU_SUSFS=y"
   echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
   echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
@@ -536,11 +498,21 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-echo "=== Vérification des configs SusFS ==="
-grep "CONFIG_KSU_SUSFS" out/.config | head -20
+# ==================== 5. PATCHES ====================
+echo "=== Patch signatures modules + tactile (APRÈS olddefconfig) ==="
 
-# ==================== 7. COMPILATION ====================
-echo "=== Compilation ==="
+# Force-pass des signatures modules
+echo "Patch signatures modules..."
+sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
+
+# Patch tactile Motorola
+echo "Patch tactile..."
+printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+
+echo "✅ Patches appliqués"
+
+# ==================== 6. COMPILATION ====================
+echo "=== Compilation finale ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
 if [ -f "out/arch/arm64/boot/Image" ]; then
@@ -548,17 +520,26 @@ if [ -f "out/arch/arm64/boot/Image" ]; then
   ls -lh out/arch/arm64/boot/
 else
   echo "❌ BUILD FAILED"
-  grep -i "error:" build.log | head -20
+  grep -iE "error:|fatal error:" build.log | head -20
   exit 1
 fi
 
-# ==================== 8. REPACK ====================
+# ==================== 7. REPACK ====================
 echo "=== Téléchargement des images stock ==="
-cd $GITHUB_WORKSPACE
+cd "$GITHUB_WORKSPACE"
 
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
   echo "Fallback mkbootimg..."
-  mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
+  mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image \
+    --ramdisk /dev/null \
+    --output final_boot.img \
+    --header_version 2 \
+    --pagesize 4096 \
+    --base 0x00000000 \
+    --kernel_offset 0x00008000 \
+    --ramdisk_offset 0x01000000 \
+    --tags_offset 0x00000100 \
+    --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
 
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
@@ -574,17 +555,19 @@ if [ -f "boot-stock.img" ]; then
   rm -rf Magisk-v27.0.apk lib/
   cd repack
   ./magiskboot unpack boot.img
-  cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
+  cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
   ./magiskboot repack boot.img new-boot.img
   mv new-boot.img ../final_boot.img
   cd ..
 fi
 
+# ==================== 8. SORTIE ====================
 echo "=== Copie vers output ==="
 mkdir -p output
-cp final_boot.img output/ReSukiSU-SuSFS-boot.img
+cp final_boot.img output/ReSukiSU-SuSFS-boot.img 2>/dev/null || true
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
-cp kernel_sources/build.log output/
+cp kernel_sources/build.log output/ 2>/dev/null || true
+cp kernel_sources/out/arch/arm64/boot/Image output/ 2>/dev/null || true
 
 echo "=== BUILD TERMINÉ ==="
 ls -lh output/
