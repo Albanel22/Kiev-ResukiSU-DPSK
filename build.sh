@@ -14,7 +14,6 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 cd $GITHUB_WORKSPACE
 
 echo "=== Clonage du kernel depuis le fork Albanel22 ==="
-# 🔄 MODIFIÉ : Fork Albanel22 au lieu de LineageOS
 git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git -b kiev-kernelsu-susfs --depth=1 kernel_sources
 cd kernel_sources
 
@@ -268,6 +267,168 @@ else
   find /tmp/susfs4ksu -name "*.patch" | head -20
 fi
 
+echo "=== Corrections automatiques des rejets SuSFS ==="
+
+# --- Correction 1 : fs/namespace.c (4 hunks rejetés) ---
+if [ -f "fs/namespace.c.rej" ]; then
+    echo "🔧 Correction automatique de fs/namespace.c..."
+    python3 - << 'PYEOF'
+import re, os
+file_path = 'fs/namespace.c'
+if os.path.exists(file_path):
+    with open(file_path, 'r') as f:
+        content = f.read()
+    
+    # Ajouter les includes SuSFS s'ils manquent
+    if '#include <linux/susfs_def.h>' not in content:
+        content = content.replace(
+            '#include <linux/sched/task.h>',
+            '#include <linux/sched/task.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif'
+        )
+    
+    # Ajouter les extern SuSFS s'ils manquent
+    if 'extern bool susfs_is_current_ksu_domain' not in content:
+        content = content.replace(
+            '#include "pnode.h"',
+            '''#include "pnode.h"
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+extern bool susfs_is_current_ksu_domain(void);
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+extern struct vfsmount *susfs_alloc_non_unshare_ksu_vfsmnt(const char *name);
+#define CL_COPY_MNT_NS BIT(25)
+#endif'''
+        )
+    
+    # Ajouter le hook dans vfs_kern_mount s'il manque
+    if 'susfs_alloc_non_unshare_ksu_vfsmnt' not in content:
+        old_pattern = r'(struct vfsmount \*\nvfs_kern_mount\(struct file_system_type \*type,\n\s*int flags, const char \*name, void \*data\)\n\{\n)(\tif \(!type\)\n\t\treturn ERR_PTR\(-ENODEV\);\n)'
+        new_code = r'''\1#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	struct vfsmount *mnt;
+	if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {
+		if (susfs_is_current_ksu_domain()) {
+			mnt = susfs_alloc_non_unshare_ksu_vfsmnt(name ?:"none");
+			goto bypass_orig_flow;
+		}
+	}
+#endif
+\2'''
+        content = re.sub(old_pattern, new_code, content)
+        
+        # Ajouter le label bypass_orig_flow avant alloc_vfsmnt
+        content = re.sub(
+            r'(\n\tmnt = alloc_vfsmnt\(name\);)',
+            r'\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nbypass_orig_flow:\n#endif\1',
+            content
+        )
+    
+    # Nettoyer les caractères parasites 'n' en début de ligne
+    content = re.sub(r'^\s*n(?=#ifdef|#endif|#include|#define|extern)', '', content, flags=re.MULTILINE)
+    
+    with open(file_path, 'w') as f:
+        f.write(content)
+    print("OK: fs/namespace.c corrigé")
+PYEOF
+    rm -f fs/namespace.c.rej
+fi
+
+# --- Correction 2 : include/linux/mount.h (1 hunk rejeté) ---
+if [ -f "include/linux/mount.h.rej" ]; then
+    echo "🔧 Correction automatique de include/linux/mount.h..."
+    python3 - << 'PYEOF'
+import re, os
+file_path = 'include/linux/mount.h'
+if os.path.exists(file_path):
+    with open(file_path, 'r') as f:
+        content = f.read()
+    
+    # Ajouter les champs SuSFS dans struct mount s'ils manquent
+    if 'susfs_is_not_unshared_mnt' not in content:
+        # Chercher la fin de struct mount et ajouter les champs avant
+        pattern = r'(struct mount \{[^}]*?)(\n\};)'
+        replacement = r'''\1
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	bool susfs_is_not_unshared_mnt;
+#endif
+\2'''
+        content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+    
+    with open(file_path, 'w') as f:
+        f.write(content)
+    print("OK: include/linux/mount.h corrigé")
+PYEOF
+    rm -f include/linux/mount.h.rej
+fi
+
+# --- Correction 3 : fs/proc/task_mmu.c (1 hunk rejeté) ---
+if [ -f "fs/proc/task_mmu.c.rej" ]; then
+    echo "🔧 Correction automatique de fs/proc/task_mmu.c..."
+    python3 - << 'PYEOF'
+import re, os
+file_path = 'fs/proc/task_mmu.c'
+if os.path.exists(file_path):
+    with open(file_path, 'r') as f:
+        content = f.read()
+    
+    # Ajouter le hook SUSFS_IS_INODE_SUS_MAP dans walk_page_range s'il manque
+    if 'SUSFS_IS_INODE_SUS_MAP' not in content:
+        content = content.replace(
+            "ret = walk_page_range(start_vaddr, end, &pagemap_walk);",
+            '''#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+		vma = find_vma(mm, start_vaddr);
+		if (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
+			goto bypass_orig_flow;
+#endif
+		ret = walk_page_range(start_vaddr, end, &pagemap_walk);'''
+        )
+        content = re.sub(
+            r'(ret = walk_page_range.*?)(up_read\(&mm->mmap_sem\);|mmap_read_unlock\(mm\);)',
+            r'\1#ifdef CONFIG_KSU_SUSFS_SUS_MAP\nbypass_orig_flow:\n#endif\n\t\2',
+            content,
+            flags=re.DOTALL
+        )
+    
+    # Corriger la variable 'vma' non utilisée
+    content = content.replace(
+        'struct vm_area_struct *vma;',
+        'struct vm_area_struct *vma __maybe_unused;'
+    )
+    
+    with open(file_path, 'w') as f:
+        f.write(content)
+    print("OK: fs/proc/task_mmu.c corrigé")
+PYEOF
+    rm -f fs/proc/task_mmu.c.rej
+fi
+
+# --- Correction 4 : fs/overlayfs/readdir.c (1 hunk rejeté) ---
+if [ -f "fs/overlayfs/readdir.c.rej" ]; then
+    echo "🔧 Correction automatique de fs/overlayfs/readdir.c..."
+    python3 - << 'PYEOF'
+import re, os
+file_path = 'fs/overlayfs/readdir.c'
+if os.path.exists(file_path):
+    with open(file_path, 'r') as f:
+        content = f.read()
+    
+    # Ajouter le hook SuSFS readdir s'il manque
+    if 'susfs_is_file_suspicious' not in content:
+        # Ajouter l'include si nécessaire
+        if '#include <linux/susfs_def.h>' not in content:
+            content = content.replace(
+                '#include <linux/cred.h>',
+                '#include <linux/cred.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n#include <linux/susfs_def.h>\n#endif'
+            )
+    
+    with open(file_path, 'w') as f:
+        f.write(content)
+    print("OK: fs/overlayfs/readdir.c corrigé")
+PYEOF
+    rm -f fs/overlayfs/readdir.c.rej
+fi
+
+echo "✅ Corrections automatiques terminées"
+
 echo "=== Vérification des .rej ==="
 find . -name "*.rej" -type f | while read rej; do
   echo "REJ: $rej"
@@ -347,13 +508,11 @@ fi
 echo "=== Téléchargement des images stock ==="
 cd $GITHUB_WORKSPACE
 
-# 🔄 MODIFIÉ : Date 30 août 2026
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
   echo "Fallback mkbootimg..."
   mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
 
-# 🔄 MODIFIÉ : Date 30 août 2026
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
 
 if [ -f "boot-stock.img" ]; then
