@@ -13,13 +13,10 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 
 cd $GITHUB_WORKSPACE
 
-echo "=== Clonage du kernel depuis le fork Albanel22 (branche kiev-kernelsu-susfs) ==="
-git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git -b kiev-kernelsu-susfs kernel_sources
+# 🔄 MODIFIÉ : Clonage depuis le fork Albanel22 (branche kiev-kernelsu-susfs)
+echo "=== Clonage du kernel depuis le fork Albanel22 ==="
+git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git -b kiev-kernelsu-susfs --depth=1 kernel_sources
 cd kernel_sources
-
-echo "=== Inspection du dépôt après clone ==="
-ls -la drivers/kernelsu 2>/dev/null && echo "-> KernelSU déjà présent" || echo "-> Pas de KernelSU"
-ls -la include/linux/susfs.h 2>/dev/null && echo "-> SuSFS déjà présent" || echo "-> Pas de SuSFS"
 
 echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
@@ -350,11 +347,13 @@ fi
 echo "=== Téléchargement des images stock ==="
 cd $GITHUB_WORKSPACE
 
+# 🔄 MODIFIÉ : Date mise à jour au 30 août 2026
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
   echo "Fallback mkbootimg..."
   mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
 
+# 🔄 MODIFIÉ : Date mise à jour au 30 août 2026
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
 
 if [ -f "boot-stock.img" ]; then
