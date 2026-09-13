@@ -694,18 +694,6 @@ fi
 echo "État final :"
 grep "CONFIG_KSU_MANUAL_HOOK" out/.config || true
 
-# ==================== DÉSACTIVATION FORCÉE DE SECCOMP ====================
-echo "=== Désactivation forcée de seccomp (comme les anciens builds qui marchaient) ==="
-sed -i 's/CONFIG_SECCOMP=y/# CONFIG_SECCOMP is not set/' out/.config || true
-sed -i 's/CONFIG_SECCOMP_FILTER=y/# CONFIG_SECCOMP_FILTER is not set/' out/.config || true
-echo "# CONFIG_SECCOMP is not set" >> out/.config
-echo "# CONFIG_SECCOMP_FILTER is not set" >> out/.config
-
-make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
-
-echo "État seccomp final :"
-grep -E "CONFIG_SECCOMP|CONFIG_SECCOMP_FILTER" out/.config || true
-
 # ==================== 5. PATCHES ====================
 echo "=== Patch signatures modules + tactile (APRÈS olddefconfig) ==="
 
