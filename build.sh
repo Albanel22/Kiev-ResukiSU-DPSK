@@ -469,65 +469,56 @@ PYEOF
     rm -f fs/namespace.c.rej
 fi
 
-# ==================== CORRECTION ROBUSTE fs/super.c (NOUVEAU) ====================
-echo "=== Correction des déclarations SuSFS manquantes dans fs/super.c ==="
+# ==================== CORRECTION DÉFINITIVE fs/super.c ====================
+echo "=== Correction DÉFINITIVE des déclarations SuSFS dans fs/super.c ==="
 
 python3 - << 'PYEOF'
-import os, re
+import re
 
-file_path = 'fs/super.c'
-if not os.path.exists(file_path):
-    print("❌ fs/super.c introuvable")
-    exit(1)
-
-with open(file_path, 'r') as f:
+with open('fs/super.c', 'r') as f:
     content = f.read()
 
-# 1. Ajouter l'include susfs_def.h si absent
-if 'susfs_def.h' not in content:
-    content = re.sub(
-        r'(#include\s+"internal\.h")',
-        r'''#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-#include <linux/susfs_def.h>
-#endif
-\1''',
-        content,
-        count=1
-    )
-    print("✅ Include susfs_def.h ajouté")
-
-# 2. Ajouter les externs manquants
-needed_externs = '''
+# Bloc de déclarations complet
+decl = '''
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#include <linux/susfs_def.h>
+
+/* Déclarations manquantes forcées */
 extern bool susfs_is_current_ksu_domain(void);
 extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+
 #ifndef DEFAULT_KSU_MNT_MINOR_DEV
-#define DEFAULT_KSU_MNT_MINOR_DEV  (1 << 20)
+#define DEFAULT_KSU_MNT_MINOR_DEV (1 << 20)
 #endif
 #endif /* CONFIG_KSU_SUSFS_SUS_MOUNT */
 '''
 
-if 'susfs_is_current_ksu_domain' not in content or 'susfs_is_sdcard_android_data_not_decrypted' not in content:
+# On enlève d'éventuelles anciennes tentatives
+content = re.sub(r'#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT.*?susfs_is_sdcard_android_data_not_decrypted.*?#endif', '', content, flags=re.DOTALL)
+
+# On injecte le bloc juste après le premier #include
+if 'susfs_is_current_ksu_domain' not in content:
     content = re.sub(
-        r'(#include\s+"internal\.h".*?\n)',
-        r'\1' + needed_externs + '\n',
+        r'(#include\s+[^\n]+\n)',
+        r'\1' + decl + '\n',
         content,
-        count=1,
-        flags=re.DOTALL
+        count=1
     )
-    print("✅ Externs SuSFS ajoutés dans fs/super.c")
+    print("✅ Déclarations forcées injectées au début de fs/super.c")
 else:
     print("✅ Déclarations déjà présentes")
 
-with open(file_path, 'w') as f:
+with open('fs/super.c', 'w') as f:
     f.write(content)
 
-print("✅ fs/super.c corrigé")
+print("✅ fs/super.c corrigé définitivement")
 PYEOF
+
+echo "=== Vérification des déclarations dans fs/super.c ==="
+grep -n "susfs_is_current_ksu_domain\|susfs_is_sdcard_android_data_not_decrypted\|DEFAULT_KSU_MNT_MINOR_DEV" fs/super.c | head -10 || true
 
 rm -f fs/super.c.rej 2>/dev/null || true
 
-# Vérification finale des .rej
 if find . -name "*.rej" -type f | grep -q .; then
     echo "❌ ÉCHEC CRITIQUE : Des rejets de patch SuSFS persistent."
     find . -name "*.rej" -type f -exec echo "=== {} ===" \; -exec cat {} \;
@@ -702,6 +693,18 @@ fi
 
 echo "État final :"
 grep "CONFIG_KSU_MANUAL_HOOK" out/.config || true
+
+# ==================== DÉSACTIVATION FORCÉE DE SECCOMP ====================
+echo "=== Désactivation forcée de seccomp (comme les anciens builds qui marchaient) ==="
+sed -i 's/CONFIG_SECCOMP=y/# CONFIG_SECCOMP is not set/' out/.config || true
+sed -i 's/CONFIG_SECCOMP_FILTER=y/# CONFIG_SECCOMP_FILTER is not set/' out/.config || true
+echo "# CONFIG_SECCOMP is not set" >> out/.config
+echo "# CONFIG_SECCOMP_FILTER is not set" >> out/.config
+
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+
+echo "État seccomp final :"
+grep -E "CONFIG_SECCOMP|CONFIG_SECCOMP_FILTER" out/.config || true
 
 # ==================== 5. PATCHES ====================
 echo "=== Patch signatures modules + tactile (APRÈS olddefconfig) ==="
