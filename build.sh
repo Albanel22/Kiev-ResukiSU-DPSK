@@ -353,7 +353,7 @@ PYEOF
     rm -f include/linux/mount.h.rej
 fi
 
-# --- Correction 3 : fs/proc/task_mmu.c (1 hunk rejeté) --- 🆕 CORRIGÉE
+# --- Correction 3 : fs/proc/task_mmu.c (1 hunk rejeté) --- 🆕 VERSION ROBUSTE
 if [ -f "fs/proc/task_mmu.c.rej" ]; then
     echo "🔧 Correction automatique de fs/proc/task_mmu.c..."
     python3 - << 'PYEOF'
@@ -363,21 +363,39 @@ if os.path.exists(file_path):
     with open(file_path, 'r') as f:
         content = f.read()
     
-    # 1. Ajouter l'inclusion du header SuSFS en haut du fichier
+    # 1. Ajouter l'inclusion du header SuSFS de manière inconditionnelle
     if '#include <linux/susfs_def.h>' not in content:
+        # Chercher la première inclusion linux/ et ajouter juste après
         if '#include <linux/mm.h>' in content:
             content = content.replace(
                 '#include <linux/mm.h>',
-                '#include <linux/mm.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n#include <linux/susfs_def.h>\n#endif'
+                '#include <linux/mm.h>\n#include <linux/susfs_def.h>'
             )
         elif '#include <linux/mm_types.h>' in content:
             content = content.replace(
                 '#include <linux/mm_types.h>',
-                '#include <linux/mm_types.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n#include <linux/susfs_def.h>\n#endif'
+                '#include <linux/mm_types.h>\n#include <linux/susfs_def.h>'
             )
+        else:
+            # Fallback : ajouter au tout début du fichier
+            content = '#include <linux/susfs_def.h>\n' + content
     
-    # 2. Ajouter le hook SUSFS_IS_INODE_SUS_MAP avec déclaration de vma dans un bloc
-    if 'SUSFS_IS_INODE_SUS_MAP' not in content:
+    # 2. Définir la macro SUSFS_IS_INODE_SUS_MAP si elle n'existe pas
+    if 'SUSFS_IS_INODE_SUS_MAP' not in content or '#define SUSFS_IS_INODE_SUS_MAP' not in content:
+        # Ajouter la définition de la macro juste après les includes
+        macro_def = '''
+#ifndef SUSFS_IS_INODE_SUS_MAP
+#define SUSFS_IS_INODE_SUS_MAP(inode) (false)
+#endif
+'''
+        # Insérer après le dernier #include
+        last_include = content.rfind('#include')
+        if last_include != -1:
+            end_of_line = content.find('\n', last_include)
+            content = content[:end_of_line+1] + macro_def + content[end_of_line+1:]
+    
+    # 3. Ajouter le hook avec déclaration de vma dans un bloc
+    if 'vma = find_vma(mm, start_vaddr)' not in content or 'SUSFS_IS_INODE_SUS_MAP' not in content:
         content = content.replace(
             "ret = walk_page_range(start_vaddr, end, &pagemap_walk);",
             '''#ifdef CONFIG_KSU_SUSFS_SUS_MAP
@@ -399,7 +417,7 @@ if os.path.exists(file_path):
     
     with open(file_path, 'w') as f:
         f.write(content)
-    print("OK: fs/proc/task_mmu.c corrigé")
+    print("OK: fs/proc/task_mmu.c corrigé avec macro SUSFS_IS_INODE_SUS_MAP définie")
 PYEOF
     rm -f fs/proc/task_mmu.c.rej
 fi
