@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build ReSukiSU + SusFS pour kiev (SM8250) ==="
+echo "=== Début du build ReSukiSU + SusFS (JackA1ltman) pour kiev (SM8250) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -13,12 +13,9 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 
 cd $GITHUB_WORKSPACE
 
-echo "=== Clonage du kernel LineageOS sm8250 ==="
-git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git kernel_sources
+echo "=== Clonage du kernel depuis le fork Albanel22 ==="
+git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git -b kiev-kernelsu-susfs --depth=1 kernel_sources
 cd kernel_sources
-
-echo "=== Checkout du commit du 10 août 2026 (avant merge qui casse tactile) ==="
-git checkout 7d64ef3
 
 echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
@@ -249,37 +246,27 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
-echo "=== Téléchargement SusFS ==="
-git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 /tmp/susfs4ksu 2>/dev/null || {
-  echo "Branche kernel-4.19 non trouvée, essai main..."
-  git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
-}
+echo "=== Téléchargement SuSFS (JackA1ltman) ==="
+cd $GITHUB_WORKSPACE
+git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jacka1ltman_repo
 
-echo "=== Copie des fichiers SusFS ==="
-cp /tmp/susfs4ksu/kernel_patches/fs/susfs.c fs/ 2>/dev/null || echo "susfs.c non trouvé"
-cp /tmp/susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || echo "susfs.h non trouvé"
-cp /tmp/susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/ 2>/dev/null || echo "susfs_def.h non trouvé"
-
-echo "=== Application du patch SusFS 4.19 ==="
-PATCH_419=$(find /tmp/susfs4ksu/kernel_patches -name "*4.19*" -name "*.patch" | head -1)
-if [ -n "$PATCH_419" ]; then
-  echo "Application: $PATCH_419"
-  patch -p1 < "$PATCH_419" 2>&1 | tee /tmp/susfs_patch.log || true
+echo "=== Application du patch SuSFS 4.19 (JackA1ltman) ==="
+cd kernel_sources
+PATCH_FILE="/tmp/jacka1ltman_repo/Patches/Patch/susfs_patch_to_4.19.patch"
+if [ -f "$PATCH_FILE" ]; then
+  echo "Application: $PATCH_FILE"
+  patch -p1 < "$PATCH_FILE" 2>&1 | tee /tmp/susfs_patch.log || true
 else
-  echo "Pas de patch 4.19 trouvé, liste des patches:"
-  find /tmp/susfs4ksu -name "*.patch" | head -20
+  echo "ERREUR: Patch 4.19 non trouvé !"
+  echo "Fichiers disponibles :"
+  ls -la /tmp/jacka1ltman_repo/Patches/Patch/*.patch
+  exit 1
 fi
 
 echo "=== Vérification des .rej ==="
 find . -name "*.rej" -type f | while read rej; do
   echo "REJ: $rej"
 done
-
-echo "=== Correction include susfs_def.h ==="
-if ! grep -q "susfs_def.h" fs/proc/task_mmu.c; then
-  sed -i '/#include <linux\/mm_inline.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif' fs/proc/task_mmu.c
-  echo "OK: include ajouté dans task_mmu.c"
-fi
 
 echo "=== Configuration ==="
 export ARCH=arm64
@@ -375,7 +362,7 @@ fi
 
 echo "=== Copie vers output ==="
 mkdir -p output
-cp final_boot.img output/ReSukiSU-SusFS-boot.img
+cp final_boot.img output/ReSukiSU-SusFS-JackA1ltman-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 
