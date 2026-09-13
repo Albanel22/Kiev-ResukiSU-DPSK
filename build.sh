@@ -279,14 +279,12 @@ if os.path.exists(file_path):
     with open(file_path, 'r') as f:
         content = f.read()
     
-    # Ajouter les includes SuSFS s'ils manquent
     if '#include <linux/susfs_def.h>' not in content:
         content = content.replace(
             '#include <linux/sched/task.h>',
             '#include <linux/sched/task.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif'
         )
     
-    # Ajouter les extern SuSFS s'ils manquent
     if 'extern bool susfs_is_current_ksu_domain' not in content:
         content = content.replace(
             '#include "pnode.h"',
@@ -300,7 +298,6 @@ extern struct vfsmount *susfs_alloc_non_unshare_ksu_vfsmnt(const char *name);
 #endif'''
         )
     
-    # Ajouter le hook dans vfs_kern_mount s'il manque
     if 'susfs_alloc_non_unshare_ksu_vfsmnt' not in content:
         old_pattern = r'(struct vfsmount \*\nvfs_kern_mount\(struct file_system_type \*type,\n\s*int flags, const char \*name, void \*data\)\n\{\n)(\tif \(!type\)\n\t\treturn ERR_PTR\(-ENODEV\);\n)'
         new_code = r'''\1#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
@@ -315,14 +312,12 @@ extern struct vfsmount *susfs_alloc_non_unshare_ksu_vfsmnt(const char *name);
 \2'''
         content = re.sub(old_pattern, new_code, content)
         
-        # Ajouter le label bypass_orig_flow avant alloc_vfsmnt
         content = re.sub(
             r'(\n\tmnt = alloc_vfsmnt\(name\);)',
             r'\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nbypass_orig_flow:\n#endif\1',
             content
         )
     
-    # Nettoyer les caractères parasites 'n' en début de ligne
     content = re.sub(r'^\s*n(?=#ifdef|#endif|#include|#define|extern)', '', content, flags=re.MULTILINE)
     
     with open(file_path, 'w') as f:
@@ -342,9 +337,7 @@ if os.path.exists(file_path):
     with open(file_path, 'r') as f:
         content = f.read()
     
-    # Ajouter les champs SuSFS dans struct mount s'ils manquent
     if 'susfs_is_not_unshared_mnt' not in content:
-        # Chercher la fin de struct mount et ajouter les champs avant
         pattern = r'(struct mount \{[^}]*?)(\n\};)'
         replacement = r'''\1
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
@@ -360,7 +353,7 @@ PYEOF
     rm -f include/linux/mount.h.rej
 fi
 
-# --- Correction 3 : fs/proc/task_mmu.c (1 hunk rejeté) ---
+# --- Correction 3 : fs/proc/task_mmu.c (1 hunk rejeté) --- 🆕 CORRIGÉE
 if [ -f "fs/proc/task_mmu.c.rej" ]; then
     echo "🔧 Correction automatique de fs/proc/task_mmu.c..."
     python3 - << 'PYEOF'
@@ -370,14 +363,30 @@ if os.path.exists(file_path):
     with open(file_path, 'r') as f:
         content = f.read()
     
-    # Ajouter le hook SUSFS_IS_INODE_SUS_MAP dans walk_page_range s'il manque
+    # 1. Ajouter l'inclusion du header SuSFS en haut du fichier
+    if '#include <linux/susfs_def.h>' not in content:
+        if '#include <linux/mm.h>' in content:
+            content = content.replace(
+                '#include <linux/mm.h>',
+                '#include <linux/mm.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n#include <linux/susfs_def.h>\n#endif'
+            )
+        elif '#include <linux/mm_types.h>' in content:
+            content = content.replace(
+                '#include <linux/mm_types.h>',
+                '#include <linux/mm_types.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n#include <linux/susfs_def.h>\n#endif'
+            )
+    
+    # 2. Ajouter le hook SUSFS_IS_INODE_SUS_MAP avec déclaration de vma dans un bloc
     if 'SUSFS_IS_INODE_SUS_MAP' not in content:
         content = content.replace(
             "ret = walk_page_range(start_vaddr, end, &pagemap_walk);",
             '''#ifdef CONFIG_KSU_SUSFS_SUS_MAP
-		vma = find_vma(mm, start_vaddr);
-		if (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
-			goto bypass_orig_flow;
+		{
+			struct vm_area_struct *vma;
+			vma = find_vma(mm, start_vaddr);
+			if (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
+				goto bypass_orig_flow;
+		}
 #endif
 		ret = walk_page_range(start_vaddr, end, &pagemap_walk);'''
         )
@@ -387,12 +396,6 @@ if os.path.exists(file_path):
             content,
             flags=re.DOTALL
         )
-    
-    # Corriger la variable 'vma' non utilisée
-    content = content.replace(
-        'struct vm_area_struct *vma;',
-        'struct vm_area_struct *vma __maybe_unused;'
-    )
     
     with open(file_path, 'w') as f:
         f.write(content)
@@ -411,9 +414,7 @@ if os.path.exists(file_path):
     with open(file_path, 'r') as f:
         content = f.read()
     
-    # Ajouter le hook SuSFS readdir s'il manque
     if 'susfs_is_file_suspicious' not in content:
-        # Ajouter l'include si nécessaire
         if '#include <linux/susfs_def.h>' not in content:
             content = content.replace(
                 '#include <linux/cred.h>',
