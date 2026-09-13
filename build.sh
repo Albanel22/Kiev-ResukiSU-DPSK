@@ -13,12 +13,13 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 
 cd $GITHUB_WORKSPACE
 
-echo "=== Clonage du kernel Albanel22 avec commit spécifique ==="
-git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git kernel_sources
+echo "=== Clonage du kernel depuis le fork Albanel22 (branche kiev-kernelsu-susfs) ==="
+git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git -b kiev-kernelsu-susfs kernel_sources
 cd kernel_sources
 
-echo "=== Checkout du commit a49e189 ==="
-git checkout a49e18994c494d71647f675df48e5c7349580747
+echo "=== Inspection du dépôt après clone ==="
+ls -la drivers/kernelsu 2>/dev/null && echo "-> KernelSU déjà présent" || echo "-> Pas de KernelSU"
+ls -la include/linux/susfs.h 2>/dev/null && echo "-> SuSFS déjà présent" || echo "-> Pas de SuSFS"
 
 echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
