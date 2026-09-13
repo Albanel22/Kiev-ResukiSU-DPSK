@@ -285,7 +285,6 @@ if os.path.exists(file_path):
     
     # 1. Ajouter l'include susfs_def.h après les premiers includes
     if '#include <linux/susfs_def.h>' not in content:
-        # Chercher le dernier #include linux/ dans les 50 premières lignes
         lines = content.split('\n')
         last_include_idx = -1
         for i, line in enumerate(lines[:50]):
@@ -297,15 +296,14 @@ if os.path.exists(file_path):
             content = '\n'.join(lines)
     
     # 2. Ajouter les déclarations extern pour les fonctions SuSFS
+    # NE PAS redéfinir DEFAULT_KSU_MNT_MINOR_DEV car il existe déjà dans susfs_def.h
     if 'extern bool susfs_is_current_ksu_domain' not in content:
         extern_decl = '''
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 extern bool susfs_is_current_ksu_domain(void);
 extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
-#define DEFAULT_KSU_MNT_MINOR_DEV 0x100
 #endif
 '''
-        # Insérer après le dernier #include
         lines = content.split('\n')
         last_include_idx = -1
         for i, line in enumerate(lines):
