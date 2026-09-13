@@ -722,10 +722,16 @@ fi
 echo "=== Compilation de ksud (ReSukiSU) ==="
 cd "$GITHUB_WORKSPACE"
 
+# Installation de Rust (nightly obligatoire)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
+
+# On force le toolchain nightly
+rustup toolchain install nightly
+rustup default nightly
 rustup target add aarch64-linux-android
 
+# NDK
 wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
 unzip -q android-ndk-r26d-linux.zip
 
@@ -752,7 +758,8 @@ AR_aarch64_linux_android = "$AR_PATH"
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
 EOF
 
-cargo build --release --target aarch64-linux-android
+# Compilation avec nightly
+cargo +nightly build --release --target aarch64-linux-android
 
 KSUD_BINARY="$GITHUB_WORKSPACE/ksud-src/target/aarch64-linux-android/release/ksud"
 if [ ! -f "$KSUD_BINARY" ]; then
@@ -762,7 +769,7 @@ fi
 
 cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
-echo "✅ ksud (ReSukiSU) compilé"
+echo "✅ ksud (ReSukiSU) compilé avec nightly"
 
 cd "$GITHUB_WORKSPACE"
 
