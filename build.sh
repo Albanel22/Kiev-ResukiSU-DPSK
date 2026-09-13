@@ -274,6 +274,54 @@ if [ -f "fs/proc/task_mmu.c" ]; then
   echo "OK: Correction appliquée"
 fi
 
+echo "=== Correction automatique de fs/super.c ==="
+if [ -f "fs/super.c" ]; then
+  python3 - << 'PYEOF'
+import re, os
+file_path = 'fs/super.c'
+if os.path.exists(file_path):
+    with open(file_path, 'r') as f:
+        content = f.read()
+    
+    # 1. Ajouter l'include susfs_def.h après les premiers includes
+    if '#include <linux/susfs_def.h>' not in content:
+        # Chercher le dernier #include linux/ dans les 50 premières lignes
+        lines = content.split('\n')
+        last_include_idx = -1
+        for i, line in enumerate(lines[:50]):
+            if line.startswith('#include <linux/'):
+                last_include_idx = i
+        
+        if last_include_idx >= 0:
+            lines.insert(last_include_idx + 1, '#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif')
+            content = '\n'.join(lines)
+    
+    # 2. Ajouter les déclarations extern pour les fonctions SuSFS
+    if 'extern bool susfs_is_current_ksu_domain' not in content:
+        extern_decl = '''
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+extern bool susfs_is_current_ksu_domain(void);
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+#define DEFAULT_KSU_MNT_MINOR_DEV 0x100
+#endif
+'''
+        # Insérer après le dernier #include
+        lines = content.split('\n')
+        last_include_idx = -1
+        for i, line in enumerate(lines):
+            if line.startswith('#include'):
+                last_include_idx = i
+        
+        if last_include_idx >= 0:
+            lines.insert(last_include_idx + 1, extern_decl)
+            content = '\n'.join(lines)
+    
+    with open(file_path, 'w') as f:
+        f.write(content)
+    print("OK: fs/super.c corrigé")
+PYEOF
+fi
+
 echo "=== Configuration ==="
 export ARCH=arm64
 export SUBARCH=arm64
