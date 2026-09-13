@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build ReSukiSU + SusFS (Méthode JackA1ltman) pour kiev (SM8250) ==="
+echo "=== Début du build ReSukiSU + SusFS (Méthode Python automatisée) pour kiev (SM8250) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -21,18 +21,18 @@ echo "=== Intégration du fork KernelSU : ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-echo "=== Application de la méthode SusFS de JackA1ltman (Hooks manuels) ==="
+echo "=== Application des hooks manuels KernelSU (Python) ==="
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
-  cat > /tmp/hook_execveat.py << 'PYEOF'
+  python3 - << 'PYEOF'
 import re
-with open('fs/exec.c', 'r') as f:
+with open('fs/exec.c', 'r', encoding='utf-8', errors='ignore') as f:
     content = f.read()
 if 'ksu_handle_execveat' not in content:
     extern_decl = '''
 #ifdef CONFIG_KSU_MANUAL_HOOK
 __attribute__((hot))
 extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
-				void *argv, void *envp, int *flags);
+                void *argv, void *envp, int *flags);
 #endif
 '''
     pattern = r'(static int do_execveat_common\()'
@@ -48,22 +48,15 @@ extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
 	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: execveat")
-    else:
-        pattern = r'(int do_execve\(struct filename \*filename,.*?struct user_arg_ptr envp = \{ \.ptr\.native = __envp \};\n)'
-        replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n'
-        content = re.sub(pattern, replacement, content, count=1)
-        print("OK: execveat (alternatif)")
-with open('fs/exec.c', 'w') as f:
+with open('fs/exec.c', 'w', encoding='utf-8') as f:
     f.write(content)
 PYEOF
-  python3 /tmp/hook_execveat.py
 fi
 
 if ! grep -q "ksu_handle_faccessat" fs/open.c; then
-  cat > /tmp/hook_faccessat.py << 'PYEOF'
+  python3 - << 'PYEOF'
 import re
-with open('fs/open.c', 'r') as f:
+with open('fs/open.c', 'r', encoding='utf-8', errors='ignore') as f:
     content = f.read()
 if 'ksu_handle_faccessat' not in content:
     extern_decl = '''
@@ -86,25 +79,16 @@ extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
 	return do_faccessat(dfd, filename, mode);'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: faccessat")
-    else:
-        pattern = r'(SYSCALL_DEFINE3\(faccessat.*?\n\{)'
-        replacement = r'\1\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif'
-        content = re.sub(pattern, replacement, content, count=1)
-        print("OK: faccessat (alternatif)")
-with open('fs/open.c', 'w') as f:
+with open('fs/open.c', 'w', encoding='utf-8') as f:
     f.write(content)
 PYEOF
-  python3 /tmp/hook_faccessat.py
 fi
 
 if ! grep -q "ksu_handle_fstat64_ret" fs/stat.c; then
-  cat > /tmp/hook_stat_complete.py << 'PYEOF'
+  python3 - << 'PYEOF'
 import re
-
-with open('fs/stat.c', 'r') as f:
+with open('fs/stat.c', 'r', encoding='utf-8', errors='ignore') as f:
     content = f.read()
-
 if 'ksu_handle_stat' not in content:
     extern_decl = '''
 #ifdef CONFIG_KSU_MANUAL_HOOK
@@ -119,99 +103,16 @@ extern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **sta
 '''
     pattern = r'(SYSCALL_DEFINE4\(newfstatat)'
     content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-
-if 'ksu_handle_stat(&dfd' not in content:
-    old_code = '''	struct kstat stat;
-	int error;
-
-	return vfs_fstatat(dfd, filename, &stat, flag);'''
-    new_code = '''	struct kstat stat;
-	int error;
-
-#ifdef CONFIG_KSU_MANUAL_HOOK
-	ksu_handle_stat(&dfd, &filename, &flag);
-#endif
-	return vfs_fstatat(dfd, filename, &stat, flag);'''
-    if old_code in content:
-        content = content.replace(old_code, new_code, 1)
-        print("OK: stat")
-    else:
-        pattern = r'(SYSCALL_DEFINE4\(newfstatat.*?int error;\n)'
-        replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n'
-        content = re.sub(pattern, replacement, content, count=1)
-        print("OK: stat (alternatif)")
-
-if 'ksu_handle_newfstat_ret' not in content:
-    old_code = '''SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
-{
-	struct kstat stat;
-	int error = vfs_fstat(fd, &stat);
-
-	if (!error)
-		error = cp_new_stat(&stat, statbuf);
-
-	return error;'''
-    new_code = '''SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
-{
-	struct kstat stat;
-	int error = vfs_fstat(fd, &stat);
-
-	if (!error)
-		error = cp_new_stat(&stat, statbuf);
-
-#ifdef CONFIG_KSU_MANUAL_HOOK
-	ksu_handle_newfstat_ret(&fd, &statbuf);
-#endif
-	return error;'''
-    if old_code in content:
-        content = content.replace(old_code, new_code, 1)
-        print("OK: newfstat_ret")
-
-if 'ksu_handle_fstat64_ret' not in content:
-    old_code = '''SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
-{
-	struct kstat stat;
-	int error = vfs_fstat(fd, &stat);
-
-	if (!error)
-		error = cp_new_stat64(&stat, statbuf);
-
-	return error;'''
-    new_code = '''SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
-{
-	struct kstat stat;
-	int error = vfs_fstat(fd, &stat);
-
-	if (!error)
-		error = cp_new_stat64(&stat, statbuf);
-
-#ifdef CONFIG_KSU_MANUAL_HOOK
-	ksu_handle_fstat64_ret(&fd, &statbuf);
-#endif
-	return error;'''
-    if old_code in content:
-        content = content.replace(old_code, new_code, 1)
-        print("OK: fstat64_ret")
-    else:
-        pattern = r'(SYSCALL_DEFINE2\(fstat64.*?return error;\n)'
-        replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_fstat64_ret(&fd, &statbuf);\n#endif\n'
-        content = re.sub(pattern, replacement, content, count=1)
-        print("OK: fstat64_ret (alternatif)")
-
-with open('fs/stat.c', 'w') as f:
+with open('fs/stat.c', 'w', encoding='utf-8') as f:
     f.write(content)
-print("=== Hooks stat terminés ===")
 PYEOF
-  python3 /tmp/hook_stat_complete.py
 fi
 
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
-  cat > /tmp/hook_reboot.py << 'PYEOF'
+  python3 - << 'PYEOF'
 import re
-
-with open('kernel/reboot.c', 'r') as f:
+with open('kernel/reboot.c', 'r', encoding='utf-8', errors='ignore') as f:
     content = f.read()
-
 if 'ksu_handle_sys_reboot' not in content:
     extern_decl = '''
 #ifdef CONFIG_KSU_MANUAL_HOOK
@@ -220,58 +121,69 @@ extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void 
 '''
     pattern = r'(SYSCALL_DEFINE4\(reboot)'
     content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-    
-    old_code = '''	char buffer[256];
-	int ret = 0;'''
-    
-    new_code = '''	char buffer[256];
-	int ret = 0;
-
-#ifdef CONFIG_KSU_MANUAL_HOOK
-	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
-#endif'''
-    
-    if old_code in content:
-        content = content.replace(old_code, new_code, 1)
-        print("OK: sys_reboot")
-    else:
-        pattern = r'(SYSCALL_DEFINE4\(reboot.*?\n\{)'
-        replacement = r'\1\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif'
-        content = re.sub(pattern, replacement, content, count=1)
-        print("OK: sys_reboot (alternatif)")
-
-with open('kernel/reboot.c', 'w') as f:
+with open('kernel/reboot.c', 'w', encoding='utf-8') as f:
     f.write(content)
 PYEOF
-  python3 /tmp/hook_reboot.py
 fi
 
-echo "=== Téléchargement Patchs SusFS ==="
-git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-4.19 /tmp/susfs4ksu 2>/dev/null || {
-  echo "Branche kernel-4.19 non trouvée, essai main..."
-  git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
-}
+echo "=== Téléchargement SusFS ==="
+git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
 
 echo "=== Copie des fichiers SusFS ==="
-cp /tmp/susfs4ksu/kernel_patches/fs/susfs.c fs/ 2>/dev/null || echo "susfs.c non trouvé"
-cp /tmp/susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || echo "susfs.h non trouvé"
-cp /tmp/susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/ 2>/dev/null || echo "susfs_def.h non trouvé"
+cp /tmp/susfs4ksu/kernel_patches/fs/susfs.c fs/
+cp /tmp/susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/
+cp /tmp/susfs4ksu/kernel_patches/include/linux/susfs_def.h include/linux/
 
-echo "=== Application du patch SusFS 4.19 ==="
-PATCH_419=$(find /tmp/susfs4ksu/kernel_patches -name "*4.19*" -name "*.patch" | head -1)
-if [ -n "$PATCH_419" ]; then
-  echo "Application: $PATCH_419"
-  patch -p1 < "$PATCH_419" 2>&1 | tee /tmp/susfs_patch.log || true
-else
-  echo "Pas de patch 4.19 trouvé, liste des patches:"
-  find /tmp/susfs4ksu -name "*.patch" | head -20
-fi
+echo "=== Application des patches SusFS via Python propre ==="
+python3 - << 'PYEOF'
+import os, re
 
-echo "=== Correction include susfs_def.h ==="
-if ! grep -q "susfs_def.h" fs/proc/task_mmu.c; then
-  sed -i '/#include <linux\/mm_inline.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif' fs/proc/task_mmu.c
-  echo "OK: include ajouté dans task_mmu.c"
-fi
+# 1. Ajout de susfs.o dans fs/Makefile
+if os.path.exists('fs/Makefile'):
+    with open('fs/Makefile', 'r', encoding='utf-8', errors='ignore') as f:
+        mf = f.read()
+    if 'susfs.o' not in mf:
+        with open('fs/Makefile', 'a', encoding='utf-8') as f:
+            f.write('\n# SuSFS integration\nobj-$(CONFIG_KSU_SUSFS) += susfs.o\n')
+
+# 2. Ajout de susfs_mnt_id_backup dans struct vfsmount / struct mount
+for mfile in ['include/linux/mount.h', 'include/linux/fs.h']:
+    if os.path.exists(mfile):
+        with open(mfile, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+        if 'susfs_mnt_id_backup' not in content:
+            snippet = '\n#ifdef CONFIG_KSU_SUSFS\n    int susfs_mnt_id_backup;\n#endif\n'
+            match = re.search(r'(struct\s+(?:vfsmount|mount)\s*\{)(.*?)(\})', content, re.DOTALL)
+            if match:
+                start_s, body, end_s = match.groups()
+                new_c = content[:match.start()] + start_s + body + snippet + end_s + content[match.end():]
+                with open(mfile, 'w', encoding='utf-8') as f:
+                    f.write(new_c)
+                break
+
+# 3. Patch fs/namespace.c (include + alloc_vfsmnt init)
+if os.path.exists('fs/namespace.c'):
+    with open('fs/namespace.c', 'r', encoding='utf-8', errors='ignore') as f:
+        nsc = f.read()
+    if '#include <linux/susfs.h>' not in nsc:
+        nsc = nsc.replace('#include <linux/fs.h>', '#include <linux/fs.h>\n#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs.h>\n#endif', 1)
+    if 'susfs_mnt_id_backup' not in nsc:
+        target_pattern = r'(static\s+struct\s+mount\s*\*alloc_vfsmnt[^{]*\{)(.*?)(return\s+mnt;)'
+        def add_susfs(m):
+            return m.group(1) + m.group(2) + '\n#ifdef CONFIG_KSU_SUSFS\n    mnt->mnt.susfs_mnt_id_backup = 0;\n#endif\n' + m.group(3)
+        nsc = re.sub(target_pattern, add_susfs, nsc, count=1, flags=re.DOTALL)
+    with open('fs/namespace.c', 'w', encoding='utf-8') as f:
+        f.write(nsc)
+
+# 4. Patch fs/proc/task_mmu.c
+if os.path.exists('fs/proc/task_mmu.c'):
+    with open('fs/proc/task_mmu.c', 'r', encoding='utf-8', errors='ignore') as f:
+        tmc = f.read()
+    if 'susfs_def.h' not in tmc:
+        tmc = tmc.replace('#include <linux/mm_inline.h>', '#include <linux/mm_inline.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif', 1)
+        with open('fs/proc/task_mmu.c', 'w', encoding='utf-8') as f:
+            f.write(tmc)
+PYEOF
 
 echo "=== Configuration ==="
 export ARCH=arm64
@@ -322,12 +234,8 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 echo "=== Patch signatures modules + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# Sécurité : N'ajoute le patch tactile que s'il n'est pas déjà présent dans la branche !
 if ! grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c; then
-  echo "Application du patch tactile manuellement..."
   printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
-else
-  echo "Patch tactile déjà détecté dans les sources (branche lineage-23.2-tactile). Ajout ignoré pour éviter les conflits."
 fi
 
 echo "=== Compilation finale ==="
@@ -345,7 +253,6 @@ echo "=== Téléchargement des images stock ==="
 cd $GITHUB_WORKSPACE
 
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
-  echo "Fallback mkbootimg..."
   mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
 
