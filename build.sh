@@ -268,6 +268,12 @@ find . -name "*.rej" -type f | while read rej; do
   echo "REJ: $rej"
 done
 
+echo "=== Correction variable vma non utilisée dans task_mmu.c ==="
+if [ -f "fs/proc/task_mmu.c" ]; then
+  sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
+  echo "OK: Correction appliquée"
+fi
+
 echo "=== Configuration ==="
 export ARCH=arm64
 export SUBARCH=arm64
