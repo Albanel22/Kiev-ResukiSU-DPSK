@@ -13,11 +13,12 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 
 cd $GITHUB_WORKSPACE
 
-# 🎯 CLONAGE AVEC LE COMMIT PRÉCIS DU 18 AOÛT 2026 (AVANT le merge cassant)
-echo "=== Clonage du kernel LineageOS sm8250 au commit b1497d8 (18 août 2026) ==="
+echo "=== Clonage du kernel LineageOS sm8250 ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git kernel_sources
 cd kernel_sources
-git checkout b1497d8
+
+echo "=== Checkout du commit du 10 août 2026 (avant merge qui casse tactile) ==="
+git checkout 7d64ef3
 
 echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
