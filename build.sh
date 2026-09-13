@@ -464,6 +464,24 @@ PYEOF
     rm -f fs/namespace.c.rej
 fi
 
+if [ -f "fs/super.c.rej" ]; then
+    echo "⚠️ Rejet détecté dans super.c. Correction automatique..."
+    python3 - << 'PYEOF'
+import re, os
+file_path = 'fs/super.c'
+if os.path.exists(file_path):
+    with open(file_path, 'r') as f: content = f.read()
+    if 'susfs_is_current_ksu_domain' not in content:
+        content = content.replace(
+            '#include "internal.h"',
+            '#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include "internal.h"\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n'
+        )
+        with open(file_path, 'w') as f: f.write(content)
+        print("✅ super.c patché manuellement")
+PYEOF
+    rm -f fs/super.c.rej
+fi
+
 if find . -name "*.rej" -type f | grep -q .; then
     echo "❌ ÉCHEC CRITIQUE : Des rejets de patch SuSFS persistent."
     find . -name "*.rej" -type f -exec echo "=== {} ===" \; -exec cat {} \;
