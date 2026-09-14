@@ -2,7 +2,7 @@
 set -e
 echo "=== Build ReSukiSU + SuSFS pour kiev (SM8250, kernel 4.19.325) ==="
 echo "=== Source : lineage-23.2-tactile (pure) ==="
-echo "=== Cible : RBC + Desjardins ==="
+echo "=== Cible : APK-B$ ==="
 df -h
 
 # ==================== 0. ENVIRONNEMENT ====================
@@ -425,10 +425,7 @@ git clone --depth=1 --branch rebase https://github.com/cyberc3dr/nGKI_Kernel_Bui
 
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
-if [ -f "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" ]; then
-    echo "=== Application du patch xxksu_fix_compat ==="
-    patch -p1 --forward --batch < "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" || true
-fi
+# Note : xxksu_fix_compat.patch est ignoré (incompatible kernel 4.19)
 
 SUSFS_PATCH="/tmp/cyber_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 echo "=== Application du patch SuSFS (avec tolérance 4.19.325) ==="
@@ -526,7 +523,6 @@ with open(target, 'r') as f: c = f.read()
 with open(rej_path, 'r') as f: r = f.read()
 mod = False
 
-# Include susfs_def.h
 if 'susfs_def.h' in r and '#include <linux/susfs_def.h>' not in c:
     for anchor in ['#include <linux/user_namespace.h>', '#include <linux/fsnotify.h>',
                    '#include <linux/lockdep.h>', '#include <linux/namei.h>',
@@ -537,7 +533,6 @@ if 'susfs_def.h' in r and '#include <linux/susfs_def.h>' not in c:
     else:
         print(f"  WARN: anchor include introuvable")
 
-# Externs SUS_MOUNT
 if 'susfs_is_current_ksu_domain' in r and 'extern bool susfs_is_current_ksu_domain' not in c:
     for anchor in ['#include "internal.h"', '#include <linux/user_namespace.h>', '#include <linux/fs.h>']:
         if anchor in c:
@@ -656,7 +651,11 @@ config KSU_SUSFS_TRY_UMOUNT
 	bool "try_umount"
 	default y
 config KSU_SUSFS_HAS_MAGIC_MOUNT
-	bool "
+	bool "has_magic_mount"
+	default y
+config KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
+	bool "auto_add_ksu_default_mount"
+	default y
 config KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
 	bool "auto_add_sus_bind_mount"
 	default y
@@ -667,7 +666,6 @@ endif
 KCONFIG_EOF
 fi
 echo "✅ Section SuSFS intégrée"
-
 # ==================== 4. CONFIGURATION ====================
 echo ""
 echo "=== Configuration ==="
@@ -693,7 +691,12 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_KSU=y"
   echo "CONFIG_KSU_MANUAL_HOOK=y"
   echo "CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y"
-  # ⚠️ AUTO_INITRC_HOOK et AUTO_INPUT_HOOK DÉSACTIVÉS (fix seccomp + manager)
+  # ⚠️ AUTO_INITRC_HOOK et AUTO_INPUT_HOOK DÉSACTIVÉS
+  # → sinon ksu_handle_sys_read() et ksu_handle_input_handle_event()
+  #   deviennent des coquilles vides (return 0) :
+  #   - ksud n'est jamais lancé (hook init.rc inerte)
+  #   - seccomp reste bloqué sur filter
+  #   - le manager ne peut pas communiquer avec le kernel
   echo "# CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK is not set"
   echo "# CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK is not set"
   echo "CONFIG_KPROBES=y"
@@ -704,7 +707,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "# CONFIG_COMPAT_VDSO is not set"
   echo "# CONFIG_VDSO32 is not set"
   echo ""
-  echo "# SuSFS — ciblé RBC/Desjardins"
+  echo "# SuSFS — config ciblée APK-B$"
   echo "CONFIG_KSU_SUSFS=y"
   echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
   echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
@@ -789,16 +792,18 @@ else
   exit 1
 fi
 
-# ==================== 6b. COMPILATION KSUD ====================
+# ==================== 6b. COMPILATION KSUD (ReSukiSU) ====================
 echo ""
 echo "=== Compilation de ksud (ReSukiSU) ==="
 cd "$GITHUB_WORKSPACE"
 
+# --- Rust nightly (edition 2024 + #![feature]) ---
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly
 source "$HOME/.cargo/env"
 rustup target add aarch64-linux-android --toolchain nightly
 rustc --version
 
+# --- NDK ---
 wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
 unzip -q android-ndk-r26d-linux.zip
 
@@ -809,17 +814,32 @@ export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x8
 export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
+# Vérification outils NDK
 for tool in "$AARCH64_CLANG_PATH" "$AARCH64_CLANGXX_PATH" "$AR_PATH"; do
     if [ ! -x "$tool" ]; then
         echo "❌ Outil NDK manquant : $tool"
         exit 1
     fi
+    echo "✅ $tool"
 done
 
+# --- Clone ReSukiSU ---
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
-git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
+git clone --depth=50 https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
 
-for dir in "$GITHUB_WORKSPACE/ksud-src" "$GITHUB_WORKSPACE/ksud-src/userspace"; do
+# --- Diagnostic structure ---
+echo ""
+echo "--- Structure userspace ---"
+ls -la "$GITHUB_WORKSPACE/ksud-src/userspace/" 2>/dev/null | head -20
+echo ""
+echo "--- Cargo.toml trouvés ---"
+find "$GITHUB_WORKSPACE/ksud-src" -maxdepth 4 -name "Cargo.toml" 2>/dev/null
+echo ""
+
+# --- Config cargo dans les 3 emplacements possibles ---
+for dir in "$GITHUB_WORKSPACE/ksud-src" \
+           "$GITHUB_WORKSPACE/ksud-src/userspace" \
+           "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"; do
     mkdir -p "$dir/.cargo"
     cat > "$dir/.cargo/config.toml" <<EOF
 [target.aarch64-linux-android]
@@ -833,18 +853,44 @@ BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarc
 EOF
 done
 
+# --- Target-dir déterministe ---
 export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/ksud-build"
 
-cd "$GITHUB_WORKSPACE/ksud-src/userspace"
-cargo +nightly build --release --target aarch64-linux-android -p ksud 2>&1 | tee /tmp/ksud_build.log
+# --- Détection auto du répertoire du Cargo.toml ---
+KSUD_DIR=""
+for candidate in \
+    "$GITHUB_WORKSPACE/ksud-src/userspace/ksud" \
+    "$GITHUB_WORKSPACE/ksud-src/userspace" \
+    "$GITHUB_WORKSPACE/ksud-src"; do
+    if [ -f "$candidate/Cargo.toml" ]; then
+        KSUD_DIR="$candidate"
+        break
+    fi
+done
 
+if [ -z "$KSUD_DIR" ]; then
+    echo "❌ Impossible de trouver Cargo.toml de ksud"
+    find "$GITHUB_WORKSPACE/ksud-src" -name "Cargo.toml" 2>/dev/null
+    exit 1
+fi
+
+echo "✅ Cargo.toml trouvé dans : $KSUD_DIR"
+
+# --- Build ---
+cd "$KSUD_DIR"
+cargo +nightly build --release --target aarch64-linux-android 2>&1 | tee /tmp/ksud_build.log
+
+# --- Localisation du binaire ---
 KSUD_BINARY="$CARGO_TARGET_DIR/aarch64-linux-android/release/ksud"
 if [ ! -f "$KSUD_BINARY" ]; then
+    echo "⚠️  Pas trouvé à $KSUD_BINARY — recherche globale..."
     KSUD_BINARY=$(find "$GITHUB_WORKSPACE" -type f -name "ksud" -path "*release*" 2>/dev/null | head -1)
 fi
 
 if [ -z "$KSUD_BINARY" ] || [ ! -f "$KSUD_BINARY" ]; then
-    echo "❌ ksud introuvable"
+    echo "❌ ksud introuvable — diagnostic :"
+    find "$CARGO_TARGET_DIR" -type f 2>/dev/null | head -30 || echo "(vide)"
+    echo "--- Dernières lignes build ---"
     tail -50 /tmp/ksud_build.log
     exit 1
 fi
@@ -852,9 +898,12 @@ fi
 echo "✅ ksud trouvé : $KSUD_BINARY"
 file "$KSUD_BINARY"
 
+KSUD_SIZE=$(stat -c%s "$KSUD_BINARY")
+echo "Taille ksud : $KSUD_SIZE octets"
+
 cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
-echo "✅ ksud compilé"
+echo "✅ ksud (ReSukiSU) compilé"
 
 cd "$GITHUB_WORKSPACE"
 
@@ -886,7 +935,7 @@ if [ -f "boot-stock.img" ]; then
   ./magiskboot unpack boot.img
   cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
 
-  echo "=== Installation de ksud (PAS de su dans /system/bin/) ==="
+  echo "=== Installation de ksud dans le ramdisk (PAS de su dans /system/bin/) ==="
   ./magiskboot cpio ramdisk.cpio \
     "mkdir 0755 data" \
     "mkdir 0755 data/adb" \
@@ -910,11 +959,14 @@ cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
 
 echo ""
 echo "=== VÉRIFICATION FINALE ==="
+echo "--- Contenu de output/ ---"
 ls -lh output/
 
+echo ""
+echo "--- Vérification absence de 'su' dans /system/bin/ ---"
 if [ -f "repack/ramdisk.cpio" ]; then
     if ./repack/magiskboot cpio repack/ramdisk.cpio "ls" 2>/dev/null | grep -q "system/bin/su"; then
-        echo "❌ ATTENTION : /system/bin/su présent — RBC VA DÉTECTER"
+        echo "❌ ATTENTION : /system/bin/su présent dans le ramdisk — APK-B$ VA DÉTECTER"
         exit 1
     else
         echo "✅ Aucun /system/bin/su dans le ramdisk"
