@@ -924,6 +924,16 @@ CC_aarch64_linux_android = "$AARCH64_CLANG_PATH"
 CXX_aarch64_linux_android = "$AARCH64_CLANGXX_PATH"
 AR_aarch64_linux_android = "$AR_PATH"
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
+
+# --- Utiliser git CLI au lieu de libgit2 (contourne les bugs d'auth) ---
+[net]
+git-fetch-with-cli = true
+retry = 5
+
+# --- Patch des dépendances cassées (repo Kernel-SU/adb_client supprimé) ---
+# Le repo upstream n'existe plus → redirection vers le fork officiel Ylarod/adb_client
+[patch."https://github.com/Kernel-SU/adb_client"]
+adb_client = { git = "https://github.com/Ylarod/adb_client", branch = "master" }
 EOF
 done
 
