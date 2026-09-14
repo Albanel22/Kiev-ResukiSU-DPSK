@@ -755,6 +755,7 @@ EOF
 echo "=== Suppression du Cargo.lock pour re-resoudre les dependances (revision figee introuvable) ==="
 rm -f Cargo.lock
 
+export CARGO_NET_GIT_FETCH_WITH_CLI=true
 cargo +nightly build --release --target aarch64-linux-android
 
 # ==================== DIAGNOSTIC : localiser le vrai binaire produit ====================
