@@ -657,3 +657,269 @@ config KSU_SUSFS_TRY_UMOUNT
 	default y
 config KSU_SUSFS_HAS_MAGIC_MOUNT
 	bool "
+config KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
+	bool "auto_add_sus_bind_mount"
+	default y
+config KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
+	bool "auto_add_try_umount_for_bind_mount"
+	default y
+endif
+KCONFIG_EOF
+fi
+echo "✅ Section SuSFS intégrée"
+
+# ==================== 4. CONFIGURATION ====================
+echo ""
+echo "=== Configuration ==="
+export ARCH=arm64
+export SUBARCH=arm64
+export CROSS_COMPILE=aarch64-linux-gnu-
+export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+mkdir -p out
+
+CONFIG_NAME="vendor/lito-perf_defconfig"
+echo "Config utilisée : $CONFIG_NAME"
+
+if [ ! -f "arch/arm64/configs/$CONFIG_NAME" ]; then
+  echo "❌ $CONFIG_NAME introuvable dans le fork !"
+  ls -la arch/arm64/configs/vendor/ || true
+  exit 1
+fi
+
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
+
+{
+  echo "CONFIG_KSU=y"
+  echo "CONFIG_KSU_MANUAL_HOOK=y"
+  echo "CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y"
+  # ⚠️ AUTO_INITRC_HOOK et AUTO_INPUT_HOOK DÉSACTIVÉS (fix seccomp + manager)
+  echo "# CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK is not set"
+  echo "# CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK is not set"
+  echo "CONFIG_KPROBES=y"
+  echo "CONFIG_HAVE_KPROBES=y"
+  echo "CONFIG_KRETPROBES=y"
+  echo "CONFIG_COMPAT=y"
+  echo "CONFIG_COMPAT_32BIT_TIME=y"
+  echo "# CONFIG_COMPAT_VDSO is not set"
+  echo "# CONFIG_VDSO32 is not set"
+  echo ""
+  echo "# SuSFS — ciblé RBC/Desjardins"
+  echo "CONFIG_KSU_SUSFS=y"
+  echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
+  echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
+  echo "# CONFIG_KSU_SUSFS_SUS_MAP is not set"
+  echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
+  echo "# CONFIG_KSU_SUSFS_ENABLE_LOG is not set"
+  echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
+  echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
+  echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
+  echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y"
+  echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y"
+} >> out/.config
+
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+
+# ==================== 4b. VÉRIFICATIONS STRICTES ====================
+echo ""
+echo "=== Vérification et forçage des CONFIG critiques ==="
+
+if grep -q "# CONFIG_KSU_MANUAL_HOOK is not set" out/.config; then
+    sed -i 's/# CONFIG_KSU_MANUAL_HOOK is not set/CONFIG_KSU_MANUAL_HOOK=y/' out/.config
+fi
+if ! grep -q "^CONFIG_KSU_MANUAL_HOOK=y" out/.config; then
+    echo "CONFIG_KSU_MANUAL_HOOK=y" >> out/.config
+fi
+
+# Forcer la désactivation des AUTO_* (Kconfig peut les remettre)
+sed -i 's/^CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y/# CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK is not set/' out/.config
+sed -i 's/^CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y/# CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK is not set/' out/.config
+
+# Forcer SUS_MOUNT et SPOOF_CMDLINE
+sed -i 's/# CONFIG_KSU_SUSFS_SUS_MOUNT is not set/CONFIG_KSU_SUSFS_SUS_MOUNT=y/' out/.config
+sed -i 's/# CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG is not set/CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y/' out/.config
+
+echo ""
+echo "=== DIAGNOSTIC CONFIG FINAL ==="
+grep -E "^CONFIG_KSU=|^CONFIG_KSU_MANUAL_HOOK=|^CONFIG_KSU_MANUAL_HOOK_AUTO_|^CONFIG_KSU_SUSFS=|^CONFIG_KSU_SUSFS_SUS_MOUNT=|^CONFIG_KSU_SUSFS_SPOOF_CMDLINE" out/.config
+echo ""
+
+# Vérifications strictes
+grep -q "^CONFIG_KSU=y" out/.config || (echo "❌ CONFIG_KSU!=y" && exit 1)
+grep -q "^CONFIG_KSU_MANUAL_HOOK=y" out/.config || (echo "❌ CONFIG_KSU_MANUAL_HOOK!=y" && exit 1)
+grep -q "^CONFIG_KSU_SUSFS=y" out/.config || (echo "❌ CONFIG_KSU_SUSFS!=y" && exit 1)
+grep -q "^CONFIG_KSU_SUSFS_SUS_MOUNT=y" out/.config || (echo "❌ SUS_MOUNT!=y" && exit 1)
+grep -q "^CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" out/.config || (echo "❌ SPOOF_CMDLINE!=y" && exit 1)
+
+if grep -q "^CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y" out/.config; then
+    echo "❌ FATAL : AUTO_INITRC encore actif → ksud ne sera pas lancé"
+    exit 1
+fi
+if grep -q "^CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y" out/.config; then
+    echo "❌ FATAL : AUTO_INPUT encore actif → hook input inerte"
+    exit 1
+fi
+
+echo "✅ Config validée — hooks manuels opérationnels"
+echo ""
+
+# ==================== 5. PATCHES POST-CONFIG ====================
+echo "=== Patch signatures modules + tactile ==="
+
+sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
+
+printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+
+echo "✅ Patches appliqués"
+
+# ==================== 6. COMPILATION KERNEL ====================
+echo "=== Compilation du kernel ==="
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
+
+if [ -f "out/arch/arm64/boot/Image" ]; then
+  echo "✅ Compilation kernel réussie"
+  ls -lh out/arch/arm64/boot/
+else
+  echo "❌ BUILD KERNEL FAILED"
+  grep -iE "error:|fatal error:" build.log | head -20
+  exit 1
+fi
+
+# ==================== 6b. COMPILATION KSUD ====================
+echo ""
+echo "=== Compilation de ksud (ReSukiSU) ==="
+cd "$GITHUB_WORKSPACE"
+
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly
+source "$HOME/.cargo/env"
+rustup target add aarch64-linux-android --toolchain nightly
+rustc --version
+
+wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+unzip -q android-ndk-r26d-linux.zip
+
+export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
+export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
+export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
+export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
+
+for tool in "$AARCH64_CLANG_PATH" "$AARCH64_CLANGXX_PATH" "$AR_PATH"; do
+    if [ ! -x "$tool" ]; then
+        echo "❌ Outil NDK manquant : $tool"
+        exit 1
+    fi
+done
+
+rm -rf "$GITHUB_WORKSPACE/ksud-src"
+git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
+
+for dir in "$GITHUB_WORKSPACE/ksud-src" "$GITHUB_WORKSPACE/ksud-src/userspace"; do
+    mkdir -p "$dir/.cargo"
+    cat > "$dir/.cargo/config.toml" <<EOF
+[target.aarch64-linux-android]
+linker = "$AARCH64_CLANG_PATH"
+
+[env]
+CC_aarch64_linux_android = "$AARCH64_CLANG_PATH"
+CXX_aarch64_linux_android = "$AARCH64_CLANGXX_PATH"
+AR_aarch64_linux_android = "$AR_PATH"
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
+EOF
+done
+
+export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/ksud-build"
+
+cd "$GITHUB_WORKSPACE/ksud-src/userspace"
+cargo +nightly build --release --target aarch64-linux-android -p ksud 2>&1 | tee /tmp/ksud_build.log
+
+KSUD_BINARY="$CARGO_TARGET_DIR/aarch64-linux-android/release/ksud"
+if [ ! -f "$KSUD_BINARY" ]; then
+    KSUD_BINARY=$(find "$GITHUB_WORKSPACE" -type f -name "ksud" -path "*release*" 2>/dev/null | head -1)
+fi
+
+if [ -z "$KSUD_BINARY" ] || [ ! -f "$KSUD_BINARY" ]; then
+    echo "❌ ksud introuvable"
+    tail -50 /tmp/ksud_build.log
+    exit 1
+fi
+
+echo "✅ ksud trouvé : $KSUD_BINARY"
+file "$KSUD_BINARY"
+
+cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
+chmod 755 "$GITHUB_WORKSPACE/ksud"
+echo "✅ ksud compilé"
+
+cd "$GITHUB_WORKSPACE"
+
+# ==================== 7. REPACK ====================
+echo ""
+echo "=== Téléchargement des images stock ==="
+cd "$GITHUB_WORKSPACE"
+
+curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
+  echo "Fallback mkbootimg..."
+  mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img \
+    --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 \
+    --ramdisk_offset 0x01000000 --tags_offset 0x00000100 \
+    --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
+}
+
+curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
+
+if [ -f "boot-stock.img" ]; then
+  echo "=== Repack avec magiskboot ==="
+  mkdir -p repack
+  cp boot-stock.img repack/boot.img
+  wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
+  unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
+  mv lib/x86_64/libmagiskboot.so repack/magiskboot
+  chmod +x repack/magiskboot
+  rm -rf Magisk-v27.0.apk lib/
+  cd repack
+  ./magiskboot unpack boot.img
+  cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
+
+  echo "=== Installation de ksud (PAS de su dans /system/bin/) ==="
+  ./magiskboot cpio ramdisk.cpio \
+    "mkdir 0755 data" \
+    "mkdir 0755 data/adb" \
+    "mkdir 0755 data/adb/ksud" \
+    "add 0755 data/adb/ksud/ksud $GITHUB_WORKSPACE/ksud"
+
+  ./magiskboot repack boot.img new-boot.img
+  mv new-boot.img ../final_boot.img
+  cd ..
+fi
+
+# ==================== 8. SORTIE ====================
+echo ""
+echo "=== Copie vers output ==="
+mkdir -p output
+cp final_boot.img output/ReSukiSU-SuSFS-boot.img 2>/dev/null || true
+cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
+cp kernel_sources/build.log output/ 2>/dev/null || true
+cp kernel_sources/out/arch/arm64/boot/Image output/ 2>/dev/null || true
+cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
+
+echo ""
+echo "=== VÉRIFICATION FINALE ==="
+ls -lh output/
+
+if [ -f "repack/ramdisk.cpio" ]; then
+    if ./repack/magiskboot cpio repack/ramdisk.cpio "ls" 2>/dev/null | grep -q "system/bin/su"; then
+        echo "❌ ATTENTION : /system/bin/su présent — RBC VA DÉTECTER"
+        exit 1
+    else
+        echo "✅ Aucun /system/bin/su dans le ramdisk"
+    fi
+fi
+
+echo ""
+echo "=== BUILD TERMINÉ ==="
