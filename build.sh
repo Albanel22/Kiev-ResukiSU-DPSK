@@ -40,6 +40,53 @@ echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
+# ==================== 2b. FIX INTÉGRATION KERNELSU DANS LE BUILD ====================
+echo "=== Vérification et forçage de l'intégration kernelsu ==="
+
+# Vérifier que drivers/kernelsu/ existe
+if [ ! -d "drivers/kernelsu" ]; then
+    echo "❌ drivers/kernelsu/ n'existe pas — setup.sh n'a pas fonctionné"
+    exit 1
+fi
+
+echo "✅ drivers/kernelsu/ présent"
+ls drivers/kernelsu/ | head -10
+
+# --- Forcer drivers/Makefile ---
+if [ -f "drivers/Makefile" ]; then
+    if ! grep -q "kernelsu" drivers/Makefile; then
+        echo "→ Ajout de kernelsu/ dans drivers/Makefile"
+        echo "" >> drivers/Makefile
+        echo "obj-\$(CONFIG_KSU) += kernelsu/" >> drivers/Makefile
+    else
+        echo "✅ kernelsu déjà dans drivers/Makefile"
+    fi
+fi
+
+# --- Forcer drivers/Kconfig ---
+if [ -f "drivers/Kconfig" ]; then
+    if ! grep -q "kernelsu/Kconfig" drivers/Kconfig; then
+        echo "→ Ajout de kernelsu/Kconfig dans drivers/Kconfig"
+        # Insérer avant endmenu
+        sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+    else
+        echo "✅ kernelsu/Kconfig déjà dans drivers/Kconfig"
+    fi
+fi
+
+# --- Vérifier que le Kconfig kernelsu existe ---
+if [ ! -f "drivers/kernelsu/Kconfig" ]; then
+    echo "❌ drivers/kernelsu/Kconfig n'existe pas — setup.sh a échoué"
+    exit 1
+fi
+
+echo "✅ Intégration kernelsu dans le build forcée"
+
+# --- Vérification finale ---
+echo "--- Vérification ---"
+grep -n "kernelsu" drivers/Makefile
+grep -n "kernelsu/Kconfig" drivers/Kconfig
+
 # ==================== 3. HOOKS MANUELS ReSukiSU ====================
 echo ""
 echo "=== Hooks ReSukiSU (execveat, faccessat, stat, reboot, setresuid, sys_read, input) ==="
@@ -790,6 +837,17 @@ else
   echo "❌ BUILD KERNEL FAILED"
   grep -iE "error:|fatal error:" build.log | head -20
   exit 1
+fi
+
+# Vérification post-compilation : le kernel contient-il KSU ?
+echo ""
+echo "=== Vérification KSU dans le binaire final ==="
+if strings out/arch/arm64/boot/Image 2>/dev/null | grep -qi "kernelsu\|ksu_handle"; then
+    echo "✅ Symboles KSU trouvés dans le kernel"
+    strings out/arch/arm64/boot/Image | grep -i "kernelsu\|ksu_handle" | head -5
+else
+    echo "❌ AUCUN symbole KSU dans le kernel — CONFIG_KSU=y mais code non compilé"
+    exit 1
 fi
 
 # ==================== 6b. COMPILATION KSUD (ReSukiSU) ====================
