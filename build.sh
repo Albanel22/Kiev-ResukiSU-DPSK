@@ -18,7 +18,7 @@ cd "$GITHUB_WORKSPACE"
 
 # ==================== 1. CLONAGE DU NOYAU ====================
 echo "=== Clonage du kernel depuis le fork Albanel22 ==="
-git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git -b kiev-kernelsu-susfs --depth=1 kernel_sources
+git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git -b lineage-23.2-tactile --depth=1 kernel_sources
 cd kernel_sources
 git log --oneline -1
 
