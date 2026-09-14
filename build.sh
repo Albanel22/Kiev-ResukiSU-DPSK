@@ -1005,38 +1005,53 @@ if [ -f "boot-stock.img" ]; then
   cd ..
 fi
 
-# ==================== 7b. DIAGNOSTIC KSU (temporaire) ====================
+# ==================== 7b. DIAGNOSTIC KSU (corrigé) ====================
 echo ""
 echo "========== DIAGNOSTIC KSU =========="
+cd "$GITHUB_WORKSPACE/kernel_sources"
+
+echo "--- Emplacement actuel : $(pwd) ---"
+echo ""
+
 echo "--- 1. Symboles KSU dans le kernel compilé ---"
-strings out/arch/arm64/boot/Image 2>/dev/null | grep -iE "kernelsu|ksud|ksu_handle" | head -20
+strings out/arch/arm64/boot/Image 2>/dev/null | grep -iE "kernelsu|ksu_handle|ksud" | head -20 || echo "(aucun symbole trouvé)"
 
 echo ""
 echo "--- 2. Contenu de drivers/kernelsu/ ---"
-ls -la drivers/kernelsu/ 2>/dev/null | head -20
+ls -la drivers/kernelsu/ 2>/dev/null | head -20 || echo "❌ drivers/kernelsu/ ABSENT"
 
 echo ""
 echo "--- 3. KSUD_PATH et EMBED dans le code ---"
-grep -rn "KSUD_PATH\|EMBED_KSUD\|embed_ksud" drivers/kernelsu/ 2>/dev/null | head -20
+grep -rn "KSUD_PATH\|EMBED_KSUD\|embed_ksud" drivers/kernelsu/ 2>/dev/null | head -10 || echo "(rien trouvé)"
 
 echo ""
 echo "--- 4. drivers/Kconfig contient kernelsu ? ---"
-grep -n "kernelsu" drivers/Kconfig
+if [ -f "drivers/Kconfig" ]; then
+    grep -n "kernelsu" drivers/Kconfig || echo "❌ kernelsu ABSENT de drivers/Kconfig"
+else
+    echo "❌ drivers/Kconfig n'existe pas"
+fi
 
 echo ""
 echo "--- 5. drivers/Makefile contient kernelsu ? ---"
-grep -n "kernelsu" drivers/Makefile
+if [ -f "drivers/Makefile" ]; then
+    grep -n "kernelsu" drivers/Makefile || echo "❌ kernelsu ABSENT de drivers/Makefile"
+else
+    echo "❌ drivers/Makefile n'existe pas"
+fi
 
 echo ""
 echo "--- 6. Config finale CONFIG_KSU* ---"
-grep -E "^CONFIG_KSU" out/.config
+grep -E "^CONFIG_KSU" out/.config 2>/dev/null || echo "(aucun CONFIG_KSU)"
 
 echo ""
-echo "--- 7. Fichiers KSU dans Image (recherche binaire) ---"
-grep -c "ksud" out/arch/arm64/boot/Image 2>/dev/null || echo "0 occurrence"
+echo "--- 7. Fichiers kernelsu présents dans le source ---"
+find drivers/kernelsu -maxdepth 2 -type f -name "*.c" 2>/dev/null | head -10 || echo "(aucun .c)"
 
 echo "========== FIN DIAGNOSTIC =========="
 echo ""
+
+cd "$GITHUB_WORKSPACE"
 
 # ==================== 8. SORTIE ====================
 echo ""
