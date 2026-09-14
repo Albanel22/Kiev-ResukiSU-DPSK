@@ -887,7 +887,7 @@ done
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
 git clone --depth=50 https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
 
-# --- Supprimer les Cargo.lock (ré-résolution des dépendances Git) ---
+# --- Supprimer les Cargo.lock (ré-résolution des dépendances) ---
 echo ""
 echo "=== Suppression des Cargo.lock pour ré-résolution ==="
 find "$GITHUB_WORKSPACE/ksud-src" -name "Cargo.lock" -type f -print -delete 2>/dev/null || true
@@ -902,7 +902,7 @@ echo "--- Cargo.toml trouvés ---"
 find "$GITHUB_WORKSPACE/ksud-src" -maxdepth 4 -name "Cargo.toml" 2>/dev/null
 echo ""
 
-# --- Config cargo dans les 3 emplacements possibles ---
+# --- Config cargo (SANS le patch Ylarod qui casse) ---
 for dir in "$GITHUB_WORKSPACE/ksud-src" \
            "$GITHUB_WORKSPACE/ksud-src/userspace" \
            "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"; do
@@ -916,10 +916,6 @@ CC_aarch64_linux_android = "$AARCH64_CLANG_PATH"
 CXX_aarch64_linux_android = "$AARCH64_CLANGXX_PATH"
 AR_aarch64_linux_android = "$AR_PATH"
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
-
-# --- Patch adb_client (Kernel-SU/adb_client supprimé) ---
-[patch."https://github.com/Kernel-SU/adb_client"]
-adb_client = { git = "https://github.com/Ylarod/adb_client", branch = "master" }
 EOF
 done
 
@@ -946,8 +942,29 @@ fi
 
 echo "✅ Cargo.toml trouvé dans : $KSUD_DIR"
 
-# --- Supprimer un éventuel Cargo.lock résiduel ---
+# === CORRECTION CRITIQUE : forcer adb_client depuis crates.io ===
+echo ""
+echo "=== Force adb_client = \"3\" (crates.io) ==="
+
+# Remplace toute dépendance git vers adb_client
+sed -i -E 's|adb_client\s*=\s*\{[^}]*git[^}]*\}|adb_client = "3"|g' "$KSUD_DIR/Cargo.toml" || true
+sed -i -E 's|adb_client\s*=\s*\{[^}]*\}|adb_client = "3"|g' "$KSUD_DIR/Cargo.toml" || true
+
+# Si la ligne n'existe pas, on l'ajoute
+if ! grep -qE '^\s*adb_client\s*=' "$KSUD_DIR/Cargo.toml"; then
+    if grep -q '\[dependencies\]' "$KSUD_DIR/Cargo.toml"; then
+        sed -i '/\[dependencies\]/a adb_client = "3"' "$KSUD_DIR/Cargo.toml"
+    else
+        echo -e "\n[dependencies]\nadb_client = \"3\"" >> "$KSUD_DIR/Cargo.toml"
+    fi
+fi
+
+echo "--- Contenu de Cargo.toml (dépendances) ---"
+grep -A 30 '\[dependencies\]' "$KSUD_DIR/Cargo.toml" | head -40 || true
+
+# Supprimer tout Cargo.lock résiduel
 find "$KSUD_DIR" -maxdepth 3 -name "Cargo.lock" -delete 2>/dev/null || true
+rm -f "$CARGO_TARGET_DIR/Cargo.lock" 2>/dev/null || true
 
 # --- Build ---
 cd "$KSUD_DIR"
@@ -964,7 +981,7 @@ if [ -z "$KSUD_BINARY" ] || [ ! -f "$KSUD_BINARY" ]; then
     echo "❌ ksud introuvable — diagnostic :"
     find "$CARGO_TARGET_DIR" -type f 2>/dev/null | head -30 || echo "(vide)"
     echo "--- Dernières lignes build ---"
-    tail -50 /tmp/ksud_build.log
+    tail -80 /tmp/ksud_build.log
     exit 1
 fi
 
