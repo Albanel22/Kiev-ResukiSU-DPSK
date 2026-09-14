@@ -947,6 +947,39 @@ if [ -f "boot-stock.img" ]; then
   cd ..
 fi
 
+# ==================== 7b. DIAGNOSTIC KSU (temporaire) ====================
+echo ""
+echo "========== DIAGNOSTIC KSU =========="
+echo "--- 1. Symboles KSU dans le kernel compilé ---"
+strings out/arch/arm64/boot/Image 2>/dev/null | grep -iE "kernelsu|ksud|ksu_handle" | head -20
+
+echo ""
+echo "--- 2. Contenu de drivers/kernelsu/ ---"
+ls -la drivers/kernelsu/ 2>/dev/null | head -20
+
+echo ""
+echo "--- 3. KSUD_PATH et EMBED dans le code ---"
+grep -rn "KSUD_PATH\|EMBED_KSUD\|embed_ksud" drivers/kernelsu/ 2>/dev/null | head -20
+
+echo ""
+echo "--- 4. drivers/Kconfig contient kernelsu ? ---"
+grep -n "kernelsu" drivers/Kconfig
+
+echo ""
+echo "--- 5. drivers/Makefile contient kernelsu ? ---"
+grep -n "kernelsu" drivers/Makefile
+
+echo ""
+echo "--- 6. Config finale CONFIG_KSU* ---"
+grep -E "^CONFIG_KSU" out/.config
+
+echo ""
+echo "--- 7. Fichiers KSU dans Image (recherche binaire) ---"
+grep -c "ksud" out/arch/arm64/boot/Image 2>/dev/null || echo "0 occurrence"
+
+echo "========== FIN DIAGNOSTIC =========="
+echo ""
+
 # ==================== 8. SORTIE ====================
 echo ""
 echo "=== Copie vers output ==="
