@@ -717,12 +717,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_KSU=y"
   echo "CONFIG_KSU_MANUAL_HOOK=y"
   echo "CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y"
-  # ⚠️ AUTO_INITRC_HOOK et AUTO_INPUT_HOOK DÉSACTIVÉS
-  # → sinon ksu_handle_sys_read() et ksu_handle_input_handle_event()
-  #   deviennent des coquilles vides (return 0) :
-  #   - ksud n'est jamais lancé (hook init.rc inerte)
-  #   - seccomp reste bloqué sur filter
-  #   - le manager ne peut pas communiquer avec le kernel
   echo "# CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK is not set"
   echo "# CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK is not set"
   echo "CONFIG_KPROBES=y"
@@ -894,8 +888,6 @@ rm -rf "$GITHUB_WORKSPACE/ksud-src"
 git clone --depth=50 https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
 
 # --- Supprimer les Cargo.lock (ré-résolution des dépendances Git) ---
-# Cause : le commit d97a9664 (adb_client) a été supprimé du repo upstream
-# → un Cargo.lock figé casse le build, il faut le régénérer
 echo ""
 echo "=== Suppression des Cargo.lock pour ré-résolution ==="
 find "$GITHUB_WORKSPACE/ksud-src" -name "Cargo.lock" -type f -print -delete 2>/dev/null || true
@@ -925,13 +917,7 @@ CXX_aarch64_linux_android = "$AARCH64_CLANGXX_PATH"
 AR_aarch64_linux_android = "$AR_PATH"
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
 
-# --- Utiliser git CLI au lieu de libgit2 (contourne les bugs d'auth) ---
-[net]
-git-fetch-with-cli = true
-retry = 5
-
-# --- Patch des dépendances cassées (repo Kernel-SU/adb_client supprimé) ---
-# Le repo upstream n'existe plus → redirection vers le fork officiel Ylarod/adb_client
+# --- Patch adb_client (Kernel-SU/adb_client supprimé) ---
 [patch."https://github.com/Kernel-SU/adb_client"]
 adb_client = { git = "https://github.com/Ylarod/adb_client", branch = "master" }
 EOF
