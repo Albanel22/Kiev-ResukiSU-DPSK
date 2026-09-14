@@ -43,7 +43,6 @@ curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup
 # ==================== 2b. FIX INTÉGRATION KERNELSU DANS LE BUILD ====================
 echo "=== Vérification et forçage de l'intégration kernelsu ==="
 
-# Vérifier que drivers/kernelsu/ existe
 if [ ! -d "drivers/kernelsu" ]; then
     echo "❌ drivers/kernelsu/ n'existe pas — setup.sh n'a pas fonctionné"
     exit 1
@@ -52,7 +51,6 @@ fi
 echo "✅ drivers/kernelsu/ présent"
 ls drivers/kernelsu/ | head -10
 
-# --- Forcer drivers/Makefile ---
 if [ -f "drivers/Makefile" ]; then
     if ! grep -q "kernelsu" drivers/Makefile; then
         echo "→ Ajout de kernelsu/ dans drivers/Makefile"
@@ -63,27 +61,21 @@ if [ -f "drivers/Makefile" ]; then
     fi
 fi
 
-# --- Forcer drivers/Kconfig ---
 if [ -f "drivers/Kconfig" ]; then
     if ! grep -q "kernelsu/Kconfig" drivers/Kconfig; then
         echo "→ Ajout de kernelsu/Kconfig dans drivers/Kconfig"
-        # Insérer avant endmenu
         sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
     else
         echo "✅ kernelsu/Kconfig déjà dans drivers/Kconfig"
     fi
 fi
 
-# --- Vérifier que le Kconfig kernelsu existe ---
 if [ ! -f "drivers/kernelsu/Kconfig" ]; then
     echo "❌ drivers/kernelsu/Kconfig n'existe pas — setup.sh a échoué"
     exit 1
 fi
 
 echo "✅ Intégration kernelsu dans le build forcée"
-
-# --- Vérification finale ---
-echo "--- Vérification ---"
 grep -n "kernelsu" drivers/Makefile
 grep -n "kernelsu/Kconfig" drivers/Kconfig
 
@@ -472,8 +464,6 @@ git clone --depth=1 --branch rebase https://github.com/cyberc3dr/nGKI_Kernel_Bui
 
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
-# Note : xxksu_fix_compat.patch est ignoré (incompatible kernel 4.19)
-
 SUSFS_PATCH="/tmp/cyber_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 echo "=== Application du patch SuSFS (avec tolérance 4.19.325) ==="
 patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
@@ -482,7 +472,6 @@ patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || 
 echo ""
 echo "=== Correction automatique des .rej SuSFS ==="
 
-# --- task_mmu.c (SUS_MAP) ---
 if [ -f "fs/proc/task_mmu.c.rej" ]; then
     echo "→ Correction fs/proc/task_mmu.c..."
     python3 - << 'PYEOF'
@@ -500,7 +489,6 @@ PYEOF
     rm -f fs/proc/task_mmu.c.rej
 fi
 
-# --- namespace.c (SUS_MOUNT) ---
 if [ -f "fs/namespace.c.rej" ]; then
     echo "→ Correction fs/namespace.c..."
     python3 - << 'PYEOF'
@@ -528,7 +516,6 @@ PYEOF
     rm -f fs/namespace.c.rej
 fi
 
-# --- super.c (SUS_MOUNT) ---
 if [ -f "fs/super.c.rej" ]; then
     echo "→ Correction fs/super.c..."
     python3 - << 'PYEOF'
@@ -556,7 +543,6 @@ PYEOF
     rm -f fs/super.c.rej
 fi
 
-# --- Boucle générique pour tout autre .rej SUSFS ---
 for rej in $(find . -name "*.rej" -type f 2>/dev/null); do
     if grep -q "CONFIG_KSU_SUSFS\|susfs_def\.h\|susfs_is_current\|susfs_" "$rej"; then
         target="${rej%.rej}"
@@ -600,7 +586,6 @@ PYEOF
     fi
 done
 
-# Vérification finale
 if find . -name "*.rej" -type f | grep -q .; then
     echo ""
     echo "❌ ÉCHEC : Des .rej SuSFS persistent après correction automatique."
@@ -609,7 +594,6 @@ if find . -name "*.rej" -type f | grep -q .; then
 fi
 echo "✅ Tous les .rej SuSFS traités"
 
-# Copie des fichiers SuSFS complets
 if [ -d "/tmp/cyber_repo/Patches/fs" ]; then
     cp -rn /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
@@ -617,13 +601,11 @@ if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
     cp -rn /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
-# Makefile
 if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
     echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
     [ -f "fs/sus_su.c" ] && ! grep -q "sus_su.o" fs/Makefile && echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
 fi
 
-# Nettoyage fs/susfs.c
 if [ -f "fs/susfs.c" ]; then
     echo "🔧 Nettoyage fs/susfs.c..."
     sed -i '/^bool susfs_is_current_ksu_domain(void)/,/^}/d' fs/susfs.c || true
@@ -637,17 +619,14 @@ if [ -f "fs/susfs.c" ]; then
     fi
 fi
 
-# Include susfs_def.h dans fs/stat.c
 if [ -f "fs/stat.c" ] && ! grep -q "susfs_def.h" fs/stat.c; then
     sed -i '1i #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif' fs/stat.c
 fi
 
-# Correctif vma unused task_mmu.c
 if [ -f "fs/proc/task_mmu.c" ]; then
     sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
 fi
 
-# namespace.c cleanup
 python3 - << 'PYEOF'
 import re
 with open('fs/namespace.c', 'r') as f: c = f.read()
@@ -659,7 +638,6 @@ if 'extern bool susfs_is_current_ksu_domain' not in c:
 with open('fs/namespace.c', 'w') as f: f.write(c)
 PYEOF
 
-# Kconfig SUSFS
 if [ -f "drivers/kernelsu/Kconfig" ] && ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
     cat >> drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
 menuconfig KSU_SUSFS
@@ -713,6 +691,7 @@ endif
 KCONFIG_EOF
 fi
 echo "✅ Section SuSFS intégrée"
+
 # ==================== 4. CONFIGURATION ====================
 echo ""
 echo "=== Configuration ==="
@@ -785,11 +764,9 @@ if ! grep -q "^CONFIG_KSU_MANUAL_HOOK=y" out/.config; then
     echo "CONFIG_KSU_MANUAL_HOOK=y" >> out/.config
 fi
 
-# Forcer la désactivation des AUTO_* (Kconfig peut les remettre)
 sed -i 's/^CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y/# CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK is not set/' out/.config
 sed -i 's/^CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y/# CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK is not set/' out/.config
 
-# Forcer SUS_MOUNT et SPOOF_CMDLINE
 sed -i 's/# CONFIG_KSU_SUSFS_SUS_MOUNT is not set/CONFIG_KSU_SUSFS_SUS_MOUNT=y/' out/.config
 sed -i 's/# CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG is not set/CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y/' out/.config
 
@@ -798,7 +775,6 @@ echo "=== DIAGNOSTIC CONFIG FINAL ==="
 grep -E "^CONFIG_KSU=|^CONFIG_KSU_MANUAL_HOOK=|^CONFIG_KSU_MANUAL_HOOK_AUTO_|^CONFIG_KSU_SUSFS=|^CONFIG_KSU_SUSFS_SUS_MOUNT=|^CONFIG_KSU_SUSFS_SPOOF_CMDLINE" out/.config
 echo ""
 
-# Vérifications strictes
 grep -q "^CONFIG_KSU=y" out/.config || (echo "❌ CONFIG_KSU!=y" && exit 1)
 grep -q "^CONFIG_KSU_MANUAL_HOOK=y" out/.config || (echo "❌ CONFIG_KSU_MANUAL_HOOK!=y" && exit 1)
 grep -q "^CONFIG_KSU_SUSFS=y" out/.config || (echo "❌ CONFIG_KSU_SUSFS!=y" && exit 1)
@@ -839,7 +815,7 @@ else
   exit 1
 fi
 
-# Vérification post-compilation : le kernel contient-il KSU ?
+# ==================== 6a. VÉRIFICATION KSU DANS LE KERNEL ====================
 echo ""
 echo "=== Vérification KSU dans le binaire final ==="
 if strings out/arch/arm64/boot/Image 2>/dev/null | grep -qi "kernelsu\|ksu_handle"; then
@@ -877,10 +853,6 @@ strings out/arch/arm64/boot/Image 2>/dev/null | grep -E "^/data|/data/adb" | hea
 echo ""
 echo "--- Chemins 'ksud' dans le binaire kernel ---"
 strings out/arch/arm64/boot/Image 2>/dev/null | grep -E "ksud" | head -20 || echo "(aucun chemin ksud)"
-
-echo ""
-echo "--- Structure userspace ReSukiSU clone ---"
-ls -la "$GITHUB_WORKSPACE/ksud-src/userspace/" 2>/dev/null | head -20 || echo "(ksud-src non cloné à ce stade)"
 
 cd "$GITHUB_WORKSPACE"
 echo "=== Fin vérification KSUD_PATH ==="
@@ -920,6 +892,14 @@ done
 # --- Clone ReSukiSU ---
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
 git clone --depth=50 https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
+
+# --- Supprimer les Cargo.lock (ré-résolution des dépendances Git) ---
+# Cause : le commit d97a9664 (adb_client) a été supprimé du repo upstream
+# → un Cargo.lock figé casse le build, il faut le régénérer
+echo ""
+echo "=== Suppression des Cargo.lock pour ré-résolution ==="
+find "$GITHUB_WORKSPACE/ksud-src" -name "Cargo.lock" -type f -print -delete 2>/dev/null || true
+echo "✅ Cargo.lock supprimés"
 
 # --- Diagnostic structure ---
 echo ""
@@ -969,6 +949,9 @@ if [ -z "$KSUD_DIR" ]; then
 fi
 
 echo "✅ Cargo.toml trouvé dans : $KSUD_DIR"
+
+# --- Supprimer un éventuel Cargo.lock résiduel ---
+find "$KSUD_DIR" -maxdepth 3 -name "Cargo.lock" -delete 2>/dev/null || true
 
 # --- Build ---
 cd "$KSUD_DIR"
@@ -1040,54 +1023,6 @@ if [ -f "boot-stock.img" ]; then
   mv new-boot.img ../final_boot.img
   cd ..
 fi
-
-# ==================== 7b. DIAGNOSTIC KSU (corrigé) ====================
-echo ""
-echo "========== DIAGNOSTIC KSU =========="
-cd "$GITHUB_WORKSPACE/kernel_sources"
-
-echo "--- Emplacement actuel : $(pwd) ---"
-echo ""
-
-echo "--- 1. Symboles KSU dans le kernel compilé ---"
-strings out/arch/arm64/boot/Image 2>/dev/null | grep -iE "kernelsu|ksu_handle|ksud" | head -20 || echo "(aucun symbole trouvé)"
-
-echo ""
-echo "--- 2. Contenu de drivers/kernelsu/ ---"
-ls -la drivers/kernelsu/ 2>/dev/null | head -20 || echo "❌ drivers/kernelsu/ ABSENT"
-
-echo ""
-echo "--- 3. KSUD_PATH et EMBED dans le code ---"
-grep -rn "KSUD_PATH\|EMBED_KSUD\|embed_ksud" drivers/kernelsu/ 2>/dev/null | head -10 || echo "(rien trouvé)"
-
-echo ""
-echo "--- 4. drivers/Kconfig contient kernelsu ? ---"
-if [ -f "drivers/Kconfig" ]; then
-    grep -n "kernelsu" drivers/Kconfig || echo "❌ kernelsu ABSENT de drivers/Kconfig"
-else
-    echo "❌ drivers/Kconfig n'existe pas"
-fi
-
-echo ""
-echo "--- 5. drivers/Makefile contient kernelsu ? ---"
-if [ -f "drivers/Makefile" ]; then
-    grep -n "kernelsu" drivers/Makefile || echo "❌ kernelsu ABSENT de drivers/Makefile"
-else
-    echo "❌ drivers/Makefile n'existe pas"
-fi
-
-echo ""
-echo "--- 6. Config finale CONFIG_KSU* ---"
-grep -E "^CONFIG_KSU" out/.config 2>/dev/null || echo "(aucun CONFIG_KSU)"
-
-echo ""
-echo "--- 7. Fichiers kernelsu présents dans le source ---"
-find drivers/kernelsu -maxdepth 2 -type f -name "*.c" 2>/dev/null | head -10 || echo "(aucun .c)"
-
-echo "========== FIN DIAGNOSTIC =========="
-echo ""
-
-cd "$GITHUB_WORKSPACE"
 
 # ==================== 8. SORTIE ====================
 echo ""
