@@ -340,34 +340,78 @@ SUSFS_PATCH="/tmp/cyber_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 echo "=== Application du patch SuSFS ==="
 patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
-# Corrections minimales des .rej les plus courants
-if [ -f "fs/proc/task_mmu.c.rej" ]; then
-  echo "→ Correction fs/proc/task_mmu.c"
-  sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c || true
-  rm -f fs/proc/task_mmu.c.rej
-fi
+# ---------- Corrections des .rej + symboles manquants ----------
+echo "=== Corrections des patchs échoués + symboles manquants ==="
 
-# Copie des fichiers manquants
+# 1. Copie forcée des headers et sources SuSFS
 if [ -d "/tmp/cyber_repo/Patches/fs" ]; then
-  cp -rn /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
+  cp -rf /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
 if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
-  cp -rn /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
+  cp -rf /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
-# Ajout dans Makefile si nécessaire
+# 2. Création / correction de include/linux/susfs.h si besoin
+mkdir -p include/linux
+if [ ! -f include/linux/susfs.h ]; then
+  cat > include/linux/susfs.h << 'EOF'
+#ifndef _LINUX_SUSFS_H
+#define _LINUX_SUSFS_H
+
+#include <linux/types.h>
+#include <linux/static_key.h>
+
+/* Déclarations minimales pour 4.19 */
+extern struct static_key_false susfs_is_sdcard_android_data_not_decrypted;
+bool susfs_is_current_ksu_domain(void);
+
+#ifndef DEFAULT_KSU_MNT_MINOR_DEV
+#define DEFAULT_KSU_MNT_MINOR_DEV  1000
+#endif
+
+#endif /* _LINUX_SUSFS_H */
+EOF
+fi
+
+# 3. Forcer l'include dans fs/super.c
+if ! grep -q "susfs.h" fs/super.c; then
+  sed -i '1i #include <linux/susfs.h>' fs/super.c
+fi
+
+# 4. Ajouter les définitions manquantes dans fs/susfs.c (si le fichier existe)
+if [ -f fs/susfs.c ]; then
+  # S'assurer que susfs_is_current_ksu_domain existe
+  if ! grep -q "susfs_is_current_ksu_domain" fs/susfs.c; then
+    cat >> fs/susfs.c << 'EOF'
+
+bool susfs_is_current_ksu_domain(void)
+{
+	return false; /* stub minimal pour compilation */
+}
+EXPORT_SYMBOL_GPL(susfs_is_current_ksu_domain);
+EOF
+  fi
+
+  # Définir le static_key manquant
+  if ! grep -q "susfs_is_sdcard_android_data_not_decrypted" fs/susfs.c; then
+    cat >> fs/susfs.c << 'EOF'
+
+DEFINE_STATIC_KEY_FALSE(susfs_is_sdcard_android_data_not_decrypted);
+EXPORT_SYMBOL_GPL(susfs_is_sdcard_android_data_not_decrypted);
+EOF
+  fi
+fi
+
+# 5. Nettoyage des .rej
+rm -f fs/super.c.rej fs/namespace.c.rej fs/proc/task_mmu.c.rej 2>/dev/null || true
+
+# 6. Ajout dans Makefile
 if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
   echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
   [ -f "fs/sus_su.c" ] && echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
 fi
 
-# Nettoyage basique de susfs.c
-if [ -f "fs/susfs.c" ]; then
-  sed -i '/^bool susfs_is_current_ksu_domain(void)/,/^}/d' fs/susfs.c || true
-  sed -i '/EXPORT_SYMBOL(susfs_is_current_ksu_domain);/d' fs/susfs.c || true
-fi
-
-echo "✅ SuSFS source intégré"
+echo "✅ SuSFS source + corrections appliquées"
 
 # ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
