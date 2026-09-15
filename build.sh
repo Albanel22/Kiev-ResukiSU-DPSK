@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build ReSukiSU (sans SuSFS source) pour kiev (SM8250) ==="
+echo "=== Début du build ReSukiSU + SuSFS pour kiev (SM8250) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -26,17 +26,6 @@ git log --oneline -1
 echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
-
-# ==================== Contournement check SuSFS obligatoire ====================
-echo "=== Contournement de l'exigence SuSFS ==="
-if [ -f drivers/kernelsu/Kbuild ]; then
-  # On retire purement et simplement la ligne qui fait planter le build
-  sed -i '/You should integrate susfs in your kernel/d' drivers/kernelsu/Kbuild
-  sed -i 's/$(error You should integrate susfs in your kernel.)/$(info SuSFS check bypassed)/g' drivers/kernelsu/Kbuild
-  echo "✅ Check SuSFS contourné"
-else
-  echo "⚠️  drivers/kernelsu/Kbuild non trouvé"
-fi
 
 # ==================== 3. HOOKS MANUELS ReSukiSU ====================
 echo "=== Hooks ReSukiSU ==="
@@ -338,7 +327,49 @@ PYEOF
   python3 /tmp/hook_input.py
 fi
 
-# ==================== 4. CONFIGURATION ====================
+# ==================== 4. INTÉGRATION SuSFS (cyberc3dr) ====================
+echo ""
+echo "=== Intégration SuSFS depuis cyberc3dr ==="
+cd "$GITHUB_WORKSPACE"
+rm -rf /tmp/cyber_repo
+git clone --depth=1 --branch rebase https://github.com/cyberc3dr/nGKI_Kernel_Build.git /tmp/cyber_repo
+
+cd "$GITHUB_WORKSPACE/kernel_sources"
+
+SUSFS_PATCH="/tmp/cyber_repo/Patches/Patch/susfs_patch_to_4.19.patch"
+echo "=== Application du patch SuSFS ==="
+patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
+
+# Corrections minimales des .rej les plus courants
+if [ -f "fs/proc/task_mmu.c.rej" ]; then
+  echo "→ Correction fs/proc/task_mmu.c"
+  sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c || true
+  rm -f fs/proc/task_mmu.c.rej
+fi
+
+# Copie des fichiers manquants
+if [ -d "/tmp/cyber_repo/Patches/fs" ]; then
+  cp -rn /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
+fi
+if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
+  cp -rn /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
+fi
+
+# Ajout dans Makefile si nécessaire
+if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
+  echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
+  [ -f "fs/sus_su.c" ] && echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
+fi
+
+# Nettoyage basique de susfs.c
+if [ -f "fs/susfs.c" ]; then
+  sed -i '/^bool susfs_is_current_ksu_domain(void)/,/^}/d' fs/susfs.c || true
+  sed -i '/EXPORT_SYMBOL(susfs_is_current_ksu_domain);/d' fs/susfs.c || true
+fi
+
+echo "✅ SuSFS source intégré"
+
+# ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
 export ARCH=arm64
 export SUBARCH=arm64
@@ -361,17 +392,33 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_COMPAT_32BIT_TIME=y"
   echo "# CONFIG_COMPAT_VDSO is not set"
   echo "# CONFIG_VDSO32 is not set"
+  echo ""
+  echo "CONFIG_KSU_SUSFS=y"
+  echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
+  echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
+  echo "# CONFIG_KSU_SUSFS_SUS_MAP is not set"
+  echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
+  echo "# CONFIG_KSU_SUSFS_ENABLE_LOG is not set"
+  echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
+  echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
+  echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
+  echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y"
+  echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y"
 } >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# ==================== 5. PATCHES FINAUX ====================
+# ==================== 6. PATCHES FINAUX ====================
 echo "=== Patch signatures modules + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
-# ==================== 6. COMPILATION ====================
+# ==================== 7. COMPILATION ====================
 echo "=== Compilation finale ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
@@ -380,11 +427,11 @@ if [ -f "out/arch/arm64/boot/Image" ]; then
   ls -lh out/arch/arm64/boot/
 else
   echo "❌ BUILD FAILED"
-  grep -iE "error:|fatal error:" build.log | head -30
+  grep -iE "error:|fatal error:" build.log | head -40
   exit 1
 fi
 
-# ==================== 7. REPACK ====================
+# ==================== 8. REPACK ====================
 echo "=== Téléchargement des images stock ==="
 cd $GITHUB_WORKSPACE
 
@@ -415,10 +462,10 @@ if [ -f "boot-stock.img" ]; then
   cd ..
 fi
 
-# ==================== 8. SORTIE ====================
+# ==================== 9. SORTIE ====================
 echo "=== Copie vers output ==="
 mkdir -p output
-cp final_boot.img output/ReSukiSU-boot.img
+cp final_boot.img output/ReSukiSU-SusFS-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 
