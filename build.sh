@@ -543,6 +543,93 @@ fi
 
 echo "✅ SuSFS patch + corrections appliquées"
 
+# ==================== VÉRIFICATION DES HOOKS APRÈS SUSFS ====================
+echo ""
+echo "=== Vérification des hooks après SuSFS ==="
+
+HOOKS_MISSING=""
+
+# Vérifier execveat
+if ! grep -q "ksu_handle_execveat" fs/exec.c; then
+  HOOKS_MISSING="$HOOKS_MISSING execveat"
+  echo "❌ Hook execveat MANQUANT dans fs/exec.c"
+else
+  echo "✅ Hook execveat présent"
+fi
+
+# Vérifier faccessat
+if ! grep -q "ksu_handle_faccessat" fs/open.c; then
+  HOOKS_MISSING="$HOOKS_MISSING faccessat"
+  echo "❌ Hook faccessat MANQUANT dans fs/open.c"
+else
+  echo "✅ Hook faccessat présent"
+fi
+
+# Vérifier stat
+if ! grep -q "ksu_handle_stat" fs/stat.c; then
+  HOOKS_MISSING="$HOOKS_MISSING stat"
+  echo "❌ Hook stat MANQUANT dans fs/stat.c"
+else
+  echo "✅ Hook stat présent"
+fi
+
+# Vérifier reboot
+if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
+  HOOKS_MISSING="$HOOKS_MISSING reboot"
+  echo "❌ Hook reboot MANQUANT dans kernel/reboot.c"
+else
+  echo "✅ Hook reboot présent"
+fi
+
+# Vérifier setresuid
+if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
+  HOOKS_MISSING="$HOOKS_MISSING setresuid"
+  echo "❌ Hook setresuid MANQUANT dans kernel/sys.c"
+else
+  echo "✅ Hook setresuid présent"
+fi
+
+# Vérifier sys_read
+if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
+  HOOKS_MISSING="$HOOKS_MISSING sys_read"
+  echo "❌ Hook sys_read MANQUANT dans fs/read_write.c"
+else
+  echo "✅ Hook sys_read présent"
+fi
+
+# Vérifier input
+if ! grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
+  HOOKS_MISSING="$HOOKS_MISSING input"
+  echo "❌ Hook input MANQUANT dans drivers/input/input.c"
+else
+  echo "✅ Hook input présent"
+fi
+
+# Vérifier le dossier drivers/kernelsu
+if [ ! -d "drivers/kernelsu" ]; then
+  echo "❌ drivers/kernelsu MANQUANT !"
+  HOOKS_MISSING="$HOOKS_MISSING kernelsu_folder"
+else
+  echo "✅ drivers/kernelsu présent"
+fi
+
+# Vérifier si CONFIG_KSU est activé
+if ! grep -q "CONFIG_KSU=y" out/.config; then
+  echo "❌ CONFIG_KSU non activé dans .config !"
+  HOOKS_MISSING="$HOOKS_MISSING config_ksu"
+else
+  echo "✅ CONFIG_KSU activé"
+fi
+
+if [ -n "$HOOKS_MISSING" ]; then
+  echo ""
+  echo "⚠️ ATTENTION: Éléments manquants:$HOOKS_MISSING"
+  echo "Le patch SuSFS a peut-être écrasé les hooks."
+else
+  echo ""
+  echo "✅ Tous les hooks sont présents"
+fi
+
 # ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
 export ARCH=arm64
