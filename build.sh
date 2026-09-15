@@ -499,6 +499,41 @@ extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
 PYEOF
 fi
 
+# 7. Correction CL_COPY_MNT_NS dans fs/namespace.c
+if [ -f "fs/namespace.c" ]; then
+  python3 - << 'PYEOF'
+import re, os
+file_path = 'fs/namespace.c'
+if os.path.exists(file_path):
+    with open(file_path, 'r') as f:
+        content = f.read()
+    
+    # Vérifier si CL_COPY_MNT_NS est déjà défini
+    if 'CL_COPY_MNT_NS' not in content or '#define CL_COPY_MNT_NS' not in content:
+        # Ajouter la définition après les includes
+        lines = content.split('\n')
+        insert_idx = -1
+        
+        # Chercher le dernier #include
+        for i, line in enumerate(lines):
+            if line.strip().startswith('#include'):
+                insert_idx = i + 1
+        
+        if insert_idx > 0:
+            # Vérifier si c'est déjà dans susfs_def.h
+            if not os.path.exists('include/linux/susfs_def.h') or 'CL_COPY_MNT_NS' not in open('include/linux/susfs_def.h').read():
+                lines.insert(insert_idx, '')
+                lines.insert(insert_idx + 1, '#ifndef CL_COPY_MNT_NS')
+                lines.insert(insert_idx + 2, '#define CL_COPY_MNT_NS 0x10000000UL /* SuSFS specific */')
+                lines.insert(insert_idx + 3, '#endif')
+                content = '\n'.join(lines)
+    
+    with open(file_path, 'w') as f:
+        f.write(content)
+    print("OK: CL_COPY_MNT_NS défini dans fs/namespace.c")
+PYEOF
+fi
+
 # 5. Ajout dans Makefile
 if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
   echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
