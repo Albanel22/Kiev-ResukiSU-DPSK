@@ -400,7 +400,56 @@ extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
 PYEOF
 fi
 
-# 4. Ajout dans Makefile
+# 4. Correction automatique de fs/stat.c
+if [ -f "fs/stat.c" ]; then
+  python3 - << 'PYEOF'
+import re, os
+file_path = 'fs/stat.c'
+if os.path.exists(file_path):
+    with open(file_path, 'r') as f:
+        content = f.read()
+    
+    # 1. Ajouter l'include susfs_def.h APRÈS les premiers includes
+    if '#include <linux/susfs_def.h>' not in content:
+        lines = content.split('\n')
+        insert_idx = -1
+        
+        # Chercher le dernier #include dans les 50 premières lignes
+        for i, line in enumerate(lines[:50]):
+            if line.strip().startswith('#include <linux/'):
+                insert_idx = i + 1
+        
+        if insert_idx > 0:
+            lines.insert(insert_idx, '#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT')
+            lines.insert(insert_idx + 1, '#include <linux/susfs_def.h>')
+            lines.insert(insert_idx + 2, '#endif')
+            content = '\n'.join(lines)
+    
+    # 2. Ajouter les déclarations extern pour les fonctions SuSFS
+    if 'extern bool susfs_is_current_app_uid' not in content:
+        extern_decl = '''
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+extern bool susfs_is_current_app_uid(void);
+extern void susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *stat, unsigned int mask);
+#endif
+'''
+        lines = content.split('\n')
+        last_include_idx = -1
+        for i, line in enumerate(lines):
+            if line.strip().startswith('#include'):
+                last_include_idx = i
+        
+        if last_include_idx >= 0:
+            lines.insert(last_include_idx + 1, extern_decl)
+            content = '\n'.join(lines)
+    
+    with open(file_path, 'w') as f:
+        f.write(content)
+    print("OK: fs/stat.c corrigé")
+PYEOF
+fi
+
+# 5. Ajout dans Makefile
 if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
   echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
   [ -f "fs/sus_su.c" ] && echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
