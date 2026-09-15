@@ -609,39 +609,89 @@ fi
 echo "=== Téléchargement des images stock ==="
 cd $GITHUB_WORKSPACE
 
+# Nettoyer les anciens fichiers
+rm -f boot-stock.img dtbo-stock.img final_boot.img 2>/dev/null || true
+
+echo "--- Téléchargement boot.img ---"
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
-  echo "Fallback mkbootimg..."
+  echo "⚠️ Fallback mkbootimg..."
   mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img \
     --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 \
     --ramdisk_offset 0x01000000 --tags_offset 0x00000100 \
     --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
+  exit 0  # Sortir car on ne peut pas faire le repack
 }
 
+echo "--- Téléchargement dtbo.img ---"
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
 
+echo ""
+echo "=== Vérification des fichiers téléchargés ==="
 if [ -f "boot-stock.img" ]; then
-  echo "=== Repack avec magiskboot ==="
-  mkdir -p repack
-  cp boot-stock.img repack/boot.img
-  wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
-  unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
-  mv lib/x86_64/libmagiskboot.so repack/magiskboot
-  chmod +x repack/magiskboot
-  rm -rf Magisk-v27.0.apk lib/
-  cd repack
-  ./magiskboot unpack boot.img
-  cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
-  ./magiskboot repack boot.img new-boot.img
-  mv new-boot.img ../final_boot.img
-  cd ..
+  BOOT_SIZE=$(stat -c%s boot-stock.img 2>/dev/null || stat -f%z boot-stock.img)
+  BOOT_SIZE_MB=$((BOOT_SIZE / 1024 / 1024))
+  echo "✅ boot-stock.img: $BOOT_SIZE bytes ($BOOT_SIZE_MB MB)"
+else
+  echo "❌ boot-stock.img non trouvé !"
+  exit 1
+fi
+
+if [ -f "dtbo-stock.img" ]; then
+  DTBO_SIZE=$(stat -c%s dtbo-stock.img 2>/dev/null || stat -f%z dtbo-stock.img)
+  DTBO_SIZE_MB=$((DTBO_SIZE / 1024 / 1024))
+  echo "✅ dtbo-stock.img: $DTBO_SIZE bytes ($DTBO_SIZE_MB MB)"
+fi
+
+echo ""
+echo "=== Repack avec magiskboot ==="
+mkdir -p repack
+cp boot-stock.img repack/boot.img
+
+wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
+unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
+mv lib/x86_64/libmagiskboot.so repack/magiskboot
+chmod +x repack/magiskboot
+rm -rf Magisk-v27.0.apk lib/
+
+cd repack
+echo "--- Unpack ---"
+./magiskboot unpack boot.img
+ls -lh kernel ramdisk.cpio 2>/dev/null || ls -lh kernel
+
+echo ""
+echo "--- Remplacement du kernel ---"
+cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
+KERNEL_SIZE=$(stat -c%s kernel 2>/dev/null || stat -f%z kernel)
+KERNEL_SIZE_MB=$((KERNEL_SIZE / 1024 / 1024))
+echo "✅ Nouveau kernel: $KERNEL_SIZE bytes ($KERNEL_SIZE_MB MB)"
+
+echo ""
+echo "--- Repack ---"
+./magiskboot repack boot.img new-boot.img
+mv new-boot.img ../final_boot.img
+cd ..
+
+echo ""
+echo "=== Vérification finale ==="
+FINAL_SIZE=$(stat -c%s final_boot.img 2>/dev/null || stat -f%z final_boot.img)
+FINAL_SIZE_MB=$((FINAL_SIZE / 1024 / 1024))
+echo "✅ final_boot.img: $FINAL_SIZE bytes ($FINAL_SIZE_MB MB)"
+
+if [ "$FINAL_SIZE_MB" -lt 50 ]; then
+  echo ""
+  echo "⚠️ ATTENTION: final_boot.img fait moins de 50MB !"
+  echo "Cela peut indiquer un problème avec le repack."
+  echo "Vérifiez que le ramdisk.cpio existe dans le dossier repack/"
 fi
 
 # ==================== 9. SORTIE ====================
+echo ""
 echo "=== Copie vers output ==="
 mkdir -p output
 cp final_boot.img output/ReSukiSU-SusFS-JackA1ltman-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 
+echo ""
 echo "=== BUILD TERMINÉ ==="
 ls -lh output/
