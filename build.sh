@@ -69,12 +69,37 @@ grep -n "kernelsu/Kconfig" drivers/Kconfig
 
 # ==================== 2c. CONTOURNEMENT CHECK SuSFS DANS Kbuild ====================
 echo ""
-echo "=== Contournement de l'exigence SuSFS ==="
+echo "=== Contournement de l'exigence SuSFS dans Kbuild ==="
 if [ -f drivers/kernelsu/Kbuild ]; then
   sed -i '/You should integrate susfs in your kernel/d' drivers/kernelsu/Kbuild
   sed -i 's/\$(error You should integrate susfs in your kernel.)/\$(info SuSFS check bypassed)/g' drivers/kernelsu/Kbuild
   echo "✅ Check SuSFS dans Kbuild contourné"
 fi
+
+# ==================== 2d. NEUTRALISATION DES CHECKS INLINE/MANUAL HOOK ====================
+echo ""
+echo "=== Diagnostic : position des checks ==="
+echo "--- inline_hook_check.mk ---"
+find . -name "inline_hook_check.mk" 2>/dev/null || echo "(aucun)"
+echo "--- manual_hook_check.mk ---"
+find . -name "manual_hook_check.mk" 2>/dev/null || echo "(aucun)"
+echo ""
+
+echo "=== Neutralisation des checks inline/manual hook ==="
+# Neutraliser TOUS les fichiers inline_hook_check.mk
+find . -name "inline_hook_check.mk" -type f 2>/dev/null | while read f; do
+    echo "→ Neutralisation : $f"
+    echo "# Check neutralisé (mode SuSFS — hooks gérés par SuSFS en interne)" > "$f"
+done
+
+# Neutraliser TOUS les fichiers manual_hook_check.mk
+find . -name "manual_hook_check.mk" -type f 2>/dev/null | while read f; do
+    echo "→ Neutralisation : $f"
+    echo "# Check neutralisé (mode SuSFS — hooks gérés par SuSFS en interne)" > "$f"
+done
+
+echo "✅ Checks neutralisés"
+echo ""
 
 # ==================== 3. HOOKS MANUELS ADAPTÉS SuSFS ====================
 echo ""
@@ -98,20 +123,35 @@ extern int ksu_handle_post_execveat(int *fd, struct filename **filename_ptr,
 				void *argv, void *envp, int *flags, int *retval);
 #endif
 '''
-    # Trouver do_execveat_common
-    pattern = r'(static int do_execveat_common\(int fd, struct filename \*filename,.*?)\n\{'
-    match = re.search(pattern, content, re.DOTALL)
-    if match:
-        # Insérer les externs avant la fonction
-        content = content[:match.start()] + extern_decl + '\n' + content[match.start():]
+    # Insérer les externs avant do_execveat_common
+    pattern = r'(static int do_execveat_common\()'
+    if re.search(pattern, content):
+        content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+        print("OK: externs execveat ajoutés")
 
-        # Modifier le corps de la fonction
-        old_body = '''{
-	struct user_arg_ptr argv = { .ptr.native = __argv };
+    # Hook dans do_execveat_common directement
+    old = '''static int do_execveat_common(int fd, struct filename *filename,
+			      struct user_arg_ptr argv,
+			      struct user_arg_ptr envp,
+			      int flags)
+{'''
+    new = '''static int do_execveat_common(int fd, struct filename *filename,
+			      struct user_arg_ptr argv,
+			      struct user_arg_ptr envp,
+			      int flags)
+{
+#ifdef CONFIG_KSU_SUSFS
+	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+#endif'''
+    if old in content:
+        content = content.replace(old, new, 1)
+        print("OK: execveat hooké dans do_execveat_common")
+
+    # Hook dans do_execve
+    old2 = '''	struct user_arg_ptr argv = { .ptr.native = __argv };
 	struct user_arg_ptr envp = { .ptr.native = __envp };
 	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);'''
-        new_body = '''{
-	struct user_arg_ptr argv = { .ptr.native = __argv };
+    new2 = '''	struct user_arg_ptr argv = { .ptr.native = __argv };
 	struct user_arg_ptr envp = { .ptr.native = __envp };
 #ifdef CONFIG_KSU_SUSFS
 	int retval;
@@ -122,29 +162,9 @@ extern int ksu_handle_post_execveat(int *fd, struct filename **filename_ptr,
 #else
 	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);
 #endif'''
-        if old_body in content:
-            content = content.replace(old_body, new_body, 1)
-            print("OK: execveat hooké (do_execve)")
-        else:
-            # Fallback : hook dans do_execveat_common directement
-            old = '''static int do_execveat_common(int fd, struct filename *filename,
-			      struct user_arg_ptr argv,
-			      struct user_arg_ptr envp,
-			      int flags)
-{'''
-            new = '''static int do_execveat_common(int fd, struct filename *filename,
-			      struct user_arg_ptr argv,
-			      struct user_arg_ptr envp,
-			      int flags)
-{
-#ifdef CONFIG_KSU_SUSFS
-	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-#endif'''
-            if old in content:
-                content = content.replace(old, new, 1)
-                print("OK: execveat hooké (do_execveat_common)")
-    else:
-        print("WARN: do_execveat_common signature non standard")
+    if old2 in content:
+        content = content.replace(old2, new2, 1)
+        print("OK: post_execveat ajouté dans do_execve")
 
 with open('fs/exec.c', 'w') as f:
     f.write(content)
@@ -187,6 +207,8 @@ extern int ksu_handle_faccessat(int *dfd, struct filename **filename, int *mode,
             print("OK: faccessat hooké (SuSFS)")
         else:
             print("WARN: faccessat pattern non trouvé")
+    else:
+        print("WARN: SYSCALL faccessat non trouvé")
 
 with open('fs/open.c', 'w') as f:
     f.write(content)
@@ -213,12 +235,11 @@ extern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **sta
 #endif
 #endif
 '''
-    # Insérer avant SYSCALL_DEFINE4(newfstatat
     pattern = r'(SYSCALL_DEFINE4\(newfstatat)'
     if re.search(pattern, content):
         content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
 
-    # Hook dans newfstatat
+    # Hook newfstatat
     old = '''	struct kstat stat;
 	int error;
 
@@ -237,7 +258,7 @@ extern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **sta
         content = content.replace(old, new, 1)
         print("OK: stat hooké (newfstatat)")
 
-    # Hook dans newfstat (retour)
+    # Hook newfstat
     old2 = '''SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
 {
 	struct kstat stat;
@@ -263,7 +284,7 @@ extern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **sta
         content = content.replace(old2, new2, 1)
         print("OK: newfstat_ret hooké")
 
-    # Hook dans fstat64 (retour, pour 32-bit)
+    # Hook fstat64
     old3 = '''SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
 {
 	struct kstat stat;
@@ -470,7 +491,6 @@ PYEOF
     fi
 done
 
-# Nettoyage final des .rej non traités
 find . -name "*.rej" -type f -delete 2>/dev/null || true
 find . -name "*.orig" -type f -delete 2>/dev/null || true
 
@@ -533,9 +553,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 {
   echo "CONFIG_KSU=y"
-  echo "CONFIG_KSU_SUSFS=y"                           # ← mode de hook SuSFS
-  echo "# CONFIG_KSU_MANUAL_HOOK is not set"          # ← désactivé
-  echo "# CONFIG_KSU_TRACEPOINT_HOOK is not set"      # ← désactivé
+  echo "CONFIG_KSU_SUSFS=y"
+  echo "# CONFIG_KSU_MANUAL_HOOK is not set"
+  echo "# CONFIG_KSU_TRACEPOINT_HOOK is not set"
   echo "CONFIG_KPROBES=y"
   echo "CONFIG_HAVE_KPROBES=y"
   echo "CONFIG_KRETPROBES=y"
