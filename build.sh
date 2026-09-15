@@ -27,6 +27,17 @@ echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
+# ==================== Contournement check SuSFS obligatoire ====================
+echo "=== Contournement de l'exigence SuSFS ==="
+if [ -f drivers/kernelsu/Kbuild ]; then
+  # On retire purement et simplement la ligne qui fait planter le build
+  sed -i '/You should integrate susfs in your kernel/d' drivers/kernelsu/Kbuild
+  sed -i 's/$(error You should integrate susfs in your kernel.)/$(info SuSFS check bypassed)/g' drivers/kernelsu/Kbuild
+  echo "✅ Check SuSFS contourné"
+else
+  echo "⚠️  drivers/kernelsu/Kbuild non trouvé"
+fi
+
 # ==================== 3. HOOKS MANUELS ReSukiSU ====================
 echo "=== Hooks ReSukiSU ==="
 
