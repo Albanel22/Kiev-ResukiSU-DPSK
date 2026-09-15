@@ -209,7 +209,7 @@ PYEOF
   python3 /tmp/hook_faccessat.py
 fi
 
-# --- stat (COMPLET avec newfstat_ret et fstat64_ret) ---
+# --- stat (uniquement ksu_handle_stat via newfstatat) ---
 if ! grep -q "ksu_handle_stat" fs/stat.c; then
   cat > /tmp/hook_stat.py << 'PYEOF'
 import re
@@ -217,22 +217,19 @@ with open('fs/stat.c', 'r') as f:
     content = f.read()
 
 if 'ksu_handle_stat' not in content:
+    # Déclaration extern : UNIQUEMENT ksu_handle_stat
     extern_decl = '''
 #ifdef CONFIG_KSU
 __attribute__((hot))
 extern int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
-__attribute__((hot))
-extern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);
-#if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)
-extern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **statbuf_ptr);
-#endif
 #endif
 '''
     pattern = r'(SYSCALL_DEFINE4\(newfstatat)'
     if re.search(pattern, content):
         content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+        print("OK: extern ksu_handle_stat ajouté")
 
-    # Hook newfstatat
+    # Hook dans newfstatat UNIQUEMENT
     old = '''	struct kstat stat;
 	int error;
 
@@ -249,59 +246,9 @@ extern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **sta
 	return vfs_fstatat(dfd, filename, &stat, flag);'''
     if old in content:
         content = content.replace(old, new, 1)
-        print("OK: stat hooké (newfstatat)")
-
-    # Hook newfstat (retour)
-    old2 = '''SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
-{
-	struct kstat stat;
-	int error = vfs_fstat(fd, &stat);
-
-	if (!error)
-		error = cp_new_stat(&stat, statbuf);
-
-	return error;'''
-    new2 = '''SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
-{
-	struct kstat stat;
-	int error = vfs_fstat(fd, &stat);
-
-	if (!error)
-		error = cp_new_stat(&stat, statbuf);
-
-#ifdef CONFIG_KSU
-	ksu_handle_newfstat_ret(&fd, &statbuf);
-#endif
-	return error;'''
-    if old2 in content:
-        content = content.replace(old2, new2, 1)
-        print("OK: newfstat_ret hooké")
-
-    # Hook fstat64 (retour)
-    old3 = '''SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
-{
-	struct kstat stat;
-	int error = vfs_fstat(fd, &stat);
-
-	if (!error)
-		error = cp_new_stat64(&stat, statbuf);
-
-	return error;'''
-    new3 = '''SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
-{
-	struct kstat stat;
-	int error = vfs_fstat(fd, &stat);
-
-	if (!error)
-		error = cp_new_stat64(&stat, statbuf);
-
-#ifdef CONFIG_KSU
-	ksu_handle_fstat64_ret(&fd, &statbuf);
-#endif
-	return error;'''
-    if old3 in content:
-        content = content.replace(old3, new3, 1)
-        print("OK: fstat64_ret hooké")
+        print("OK: stat hooké (newfstatat uniquement)")
+    else:
+        print("WARN: newfstatat pattern non trouvé")
 
 with open('fs/stat.c', 'w') as f:
     f.write(content)
@@ -309,7 +256,60 @@ PYEOF
   python3 /tmp/hook_stat.py
 fi
 
-echo "✅ Hooks appliqués (execveat, faccessat, stat avec newfstat_ret et fstat64_ret)"
+echo "✅ Hooks appliqués (execveat, faccessat, stat via newfstatat)"
+
+# ==================== 3.1. NETTOYAGE DES APPELS EXCLUSIFS MANUAL_HOOK ====================
+echo ""
+echo "=== Nettoyage des appels ksu_handle_newfstat_ret/fstat64_ret ==="
+echo "=== (Ces fonctions n'existent PAS avec CONFIG_KSU_SUSFS=y) ==="
+
+python3 - << 'PYEOF'
+import re
+with open('fs/stat.c', 'r') as f:
+    content = f.read()
+
+# Retirer les blocs #ifdef CONFIG_KSU contenant ces appels
+patterns_to_remove = [
+    r'#ifdef CONFIG_KSU\s*\n\s*ksu_handle_newfstat_ret\([^;]+\);\s*\n#endif',
+    r'#ifdef CONFIG_KSU\s*\n\s*ksu_handle_fstat64_ret\([^;]+\);\s*\n#endif',
+]
+for pat in patterns_to_remove:
+    content = re.sub(pat, '', content)
+
+# Retirer les appels nus (au cas où)
+content = re.sub(r'ksu_handle_newfstat_ret\([^;]+\);', '', content)
+content = re.sub(r'ksu_handle_fstat64_ret\([^;]+\);', '', content)
+
+# Retirer les déclarations extern de ces fonctions
+content = re.sub(r'__attribute__\(\(hot\)\)\s*\nextern void ksu_handle_newfstat_ret\([^;]+\);', '', content)
+content = re.sub(r'__attribute__\(\(hot\)\)\s*\nextern void ksu_handle_fstat64_ret\([^;]+\);', '', content)
+content = re.sub(r'extern void ksu_handle_newfstat_ret\([^;]+\);', '', content)
+content = re.sub(r'extern void ksu_handle_fstat64_ret\([^;]+\);', '', content)
+
+# Nettoyer les lignes vides multiples
+content = re.sub(r'\n\s*\n\s*\n', '\n\n', content)
+
+with open('fs/stat.c', 'w') as f:
+    f.write(content)
+print("OK: nettoyage stat.c effectué")
+PYEOF
+
+echo "--- Vérification post-nettoyage ---"
+if grep -q "ksu_handle_newfstat_ret\|ksu_handle_fstat64_ret" fs/stat.c; then
+    echo "⚠️  Appels résiduels :"
+    grep -n "ksu_handle_newfstat_ret\|ksu_handle_fstat64_ret" fs/stat.c
+    exit 1
+else
+    echo "✅ Aucun appel résiduel à newfstat_ret/fstat64_ret"
+fi
+
+if grep -q "ksu_handle_stat" fs/stat.c; then
+    echo "✅ ksu_handle_stat présent (nécessaire pour SuSFS)"
+else
+    echo "⚠️  ksu_handle_stat absent"
+fi
+
+echo "✅ Nettoyage terminé"
 
 # ==================== 3.4. disable_seccomp() ====================
 echo ""
