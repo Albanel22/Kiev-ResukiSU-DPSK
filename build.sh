@@ -66,6 +66,19 @@ echo "✅ Intégration kernelsu dans le build forcée"
 grep -n "kernelsu" drivers/Makefile
 grep -n "kernelsu/Kconfig" drivers/Kconfig
 
+# ==================== 2d. DIAGNOSTIC CONFIG KSU ====================
+echo ""
+echo "=== Diagnostic des options KSU disponibles ==="
+echo "--- Options dans drivers/kernelsu/Kconfig ---"
+grep -E "^\s*(config|menuconfig)" drivers/kernelsu/Kconfig
+echo ""
+echo "--- Recherche de MANUAL_HOOK ---"
+grep -rn "MANUAL_HOOK" drivers/kernelsu/ 2>/dev/null | head -20
+echo ""
+echo "--- Recherche de KPROBES_HOOK / TRACEPOINT ---"
+grep -rn "KPROBES_HOOK\|TRACEPOINT\|MANUAL" drivers/kernelsu/Kconfig 2>/dev/null | head -20
+echo ""
+
 # ==================== 2c. CONTOURNEMENT CHECK SuSFS ====================
 echo ""
 echo "=== Contournement de l'exigence SuSFS ==="
