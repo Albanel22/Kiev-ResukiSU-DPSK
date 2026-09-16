@@ -1,8 +1,9 @@
 #!/bin/bash
 set -e
-echo "=== Début du build ReSukiSU + SuSFS (JackA1ltman/NonGKI_Kernel_Build_2nd, mainline) pour kiev (SM8250) ==="
+echo "=== Build ReSukiSU + SuSFS (JackA1ltman/NonGKI_Kernel_Build_2nd, mainline) pour kiev (SM8250) ==="
 df -h
 
+# ==================== 0. ENVIRONNEMENT ====================
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 sudo apt-get clean
 
@@ -11,7 +12,7 @@ sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.l
 sudo apt-get update
 sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev libssl-dev \
   libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang llvm lld \
-  device-tree-compiler zip unzip curl git python3 mkbootimg
+  device-tree-compiler zip unzip curl git python3 mkbootimg binutils
 
 cd $GITHUB_WORKSPACE
 
@@ -27,8 +28,38 @@ echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
+# ==================== 2b. VÉRIFICATION INTÉGRATION KERNELSU ====================
+echo ""
+echo "=== Vérification de l'intégration kernelsu ==="
+
+if [ ! -d "drivers/kernelsu" ]; then
+    echo "❌ drivers/kernelsu/ n'existe pas — setup.sh a échoué"
+    exit 1
+fi
+echo "✅ drivers/kernelsu/ présent"
+
+# Forcer drivers/Makefile
+if [ -f "drivers/Makefile" ]; then
+    if ! grep -q "kernelsu" drivers/Makefile; then
+        echo "" >> drivers/Makefile
+        echo "obj-\$(CONFIG_KSU) += kernelsu/" >> drivers/Makefile
+        echo "→ Ajout de kernelsu/ dans drivers/Makefile"
+    fi
+fi
+
+# Forcer drivers/Kconfig
+if [ -f "drivers/Kconfig" ]; then
+    if ! grep -q "kernelsu/Kconfig" drivers/Kconfig; then
+        sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+        echo "→ Ajout de kernelsu/Kconfig dans drivers/Kconfig"
+    fi
+fi
+
+echo "✅ Intégration kernelsu dans le build forcée"
+
 # ==================== 3. HOOKS MANUELS ReSukiSU ====================
-echo "=== Hooks ReSukiSU ==="
+echo ""
+echo "=== Hooks ReSukiSU (avec CONFIG_KSU_MANUAL_HOOK) ==="
 
 # --- execveat ---
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
@@ -329,7 +360,7 @@ fi
 
 echo "✅ Hooks ReSukiSU en place"
 
-# ==================== 4. INTÉGRATION SuSFS (JackA1ltman, branche mainline) ====================
+# ==================== 4. INTÉGRATION SuSFS (JackA1ltman, mainline) ====================
 echo ""
 echo "=== Intégration SuSFS depuis JackA1ltman/NonGKI_Kernel_Build_2nd (mainline) ==="
 cd "$GITHUB_WORKSPACE"
@@ -349,8 +380,8 @@ echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
 echo "=== Application du patch SuSFS ==="
 patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
-# ---------- Corrections des .rej (logique réelle, pas de stubs) ----------
-echo "=== Corrections des rejets de patch (logique réelle du patch, pas de stub) ==="
+# ---------- Corrections des .rej ----------
+echo "=== Corrections des rejets de patch ==="
 
 if [ -f "fs/proc/task_mmu.c.rej" ]; then
     echo "⚠️ Rejet détecté dans task_mmu.c. Correction automatique..."
@@ -433,7 +464,7 @@ if find . -name "*.rej" -type f | grep -q .; then
 fi
 echo "✅ Patch SuSFS appliqué avec succès (aucun rejet)."
 
-# Copie des fichiers source/headers SuSFS fournis par JackA1ltman
+# Copie des fichiers source/headers SuSFS
 if [ -d "/tmp/jack_repo/Patches/fs" ]; then
     cp -rn /tmp/jack_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
@@ -451,43 +482,16 @@ fi
 
 # Correction variable 'vma' non utilisée
 if [ -f "fs/proc/task_mmu.c" ]; then
-    echo "🔧 Correction de la variable 'vma' non utilisée dans task_mmu.c..."
     sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
 fi
 
-# Symboles susfs_is_current_ksu_domain / susfs_ksu_sid / susfs_priv_app_sid
-# (uniquement si vraiment absents après le patch réel — pas un stub par défaut,
-# c'est un filet de sécurité minimal identique à l'implémentation SuSFS d'origine)
-if [ -f "fs/susfs.c" ] && ! grep -q "susfs_is_current_ksu_domain" fs/susfs.c; then
-    echo "⚠️ susfs_is_current_ksu_domain absent après le patch réel — ajout de l'implémentation standard SuSFS"
-    cat >> fs/susfs.c << 'SUSFS_EOF'
-
-#ifdef CONFIG_KSU_SUSFS
-bool susfs_is_current_ksu_domain(void)
-{
-    const struct cred *cred = current_cred();
-    return (cred->uid.val == 0 || cred->uid.val == 2000);
-}
-EXPORT_SYMBOL(susfs_is_current_ksu_domain);
-
-u32 susfs_ksu_sid = 0;
-EXPORT_SYMBOL(susfs_ksu_sid);
-
-u32 susfs_priv_app_sid = 0;
-EXPORT_SYMBOL(susfs_priv_app_sid);
-#endif
-SUSFS_EOF
-fi
-
-echo "✅ SuSFS (JackA1ltman mainline) intégré, sans stub à return-false fabriqué"
-
 # ==================== 4b. FIX DES DÉCLARATIONS SUSFS MANQUANTES ====================
 echo ""
-echo "=== Fix des déclarations SuSFS manquantes (susfs_is_current_app_uid, STATX_SUS_KSTAT) ==="
+echo "=== Fix des déclarations SuSFS manquantes (stat.c) ==="
 
 # --- 1. Fix include/linux/susfs.h : ajouter susfs_is_current_app_uid ---
 if [ -f "include/linux/susfs.h" ]; then
-    if ! grep -q "susfs_is_current_app_uid" include/linux/susfs.h; then
+    if ! grep -qE "bool susfs_is_current_app_uid" include/linux/susfs.h; then
         echo "→ Ajout de susfs_is_current_app_uid dans include/linux/susfs.h"
         cat >> include/linux/susfs.h << 'SUSFS_H_EOF'
 
@@ -495,22 +499,7 @@ if [ -f "include/linux/susfs.h" ]; then
 bool susfs_is_current_app_uid(void);
 #endif
 SUSFS_H_EOF
-    else
-        echo "✅ susfs_is_current_app_uid déjà dans susfs.h"
     fi
-else
-    echo "❌ include/linux/susfs.h n'existe pas — création"
-    mkdir -p include/linux
-    cat > include/linux/susfs.h << 'SUSFS_H_EOF'
-#ifndef _LINUX_SUSFS_H
-#define _LINUX_SUSFS_H
-
-#ifdef CONFIG_KSU_SUSFS
-bool susfs_is_current_app_uid(void);
-#endif
-
-#endif /* _LINUX_SUSFS_H */
-SUSFS_H_EOF
 fi
 
 # --- 2. Fix include/linux/susfs_def.h : ajouter STATX_SUS_KSTAT* ---
@@ -524,28 +513,12 @@ if [ -f "include/linux/susfs_def.h" ]; then
 #define STATX_SUS_KSTAT_FUSE 0x20000000
 #endif
 SUSFS_DEF_EOF
-    else
-        echo "✅ STATX_SUS_KSTAT déjà dans susfs_def.h"
     fi
-else
-    echo "❌ include/linux/susfs_def.h n'existe pas — création"
-    mkdir -p include/linux
-    cat > include/linux/susfs_def.h << 'SUSFS_DEF_EOF'
-#ifndef _LINUX_SUSFS_DEF_H
-#define _LINUX_SUSFS_DEF_H
-
-#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-#define STATX_SUS_KSTAT     0x10000000
-#define STATX_SUS_KSTAT_FUSE 0x20000000
-#endif
-
-#endif /* _LINUX_SUSFS_DEF_H */
-SUSFS_DEF_EOF
 fi
 
-# --- 3. Fix fs/susfs.c : ajouter susfs_is_current_app_uid ---
+# --- 3. Fix fs/susfs.c : ajouter susfs_is_current_app_uid SI ABSENT ---
 if [ -f "fs/susfs.c" ]; then
-    if ! grep -q "susfs_is_current_app_uid" fs/susfs.c; then
+    if ! grep -qE "^bool susfs_is_current_app_uid" fs/susfs.c; then
         echo "→ Ajout de susfs_is_current_app_uid dans fs/susfs.c"
         cat >> fs/susfs.c << 'SUSFS_C_EOF'
 
@@ -559,69 +532,64 @@ EXPORT_SYMBOL(susfs_is_current_app_uid);
 #endif
 SUSFS_C_EOF
     else
-        echo "✅ susfs_is_current_app_uid déjà dans susfs.c"
+        echo "✅ susfs_is_current_app_uid déjà défini dans susfs.c"
     fi
 fi
 
-# --- 4. Fix fs/stat.c : s'assurer que susfs_def.h est inclus ---
+# --- 4. Fix fs/stat.c : s'assurer que susfs_def.h et susfs.h sont inclus ---
 if [ -f "fs/stat.c" ]; then
     if ! grep -q "susfs_def.h" fs/stat.c; then
-        echo "→ Ajout de #include <linux/susfs_def.h> dans fs/stat.c"
         sed -i '1i #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif' fs/stat.c
-    else
-        echo "✅ susfs_def.h déjà inclus dans fs/stat.c"
     fi
     if ! grep -q "susfs.h" fs/stat.c; then
-        echo "→ Ajout de #include <linux/susfs.h> dans fs/stat.c"
         sed -i '1i #ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs.h>\n#endif' fs/stat.c
-    else
-        echo "✅ susfs.h déjà inclus dans fs/stat.c"
     fi
 fi
 
-echo "✅ Fix SuSFS terminé"
+echo "✅ Fix SuSFS stat.c terminé"
 
 # ==================== 4c. FIX DES DÉFINITIONS SUSFS POUR fs/namespace.c ====================
 echo ""
 echo "=== Fix des définitions SuSFS manquantes pour namespace.c ==="
 
-# --- 1. Ajouter les macros et déclarations dans include/linux/susfs_def.h ---
+# --- 1. Ajouter les macros dans include/linux/susfs_def.h ---
 if [ -f "include/linux/susfs_def.h" ]; then
-    # Macros de mount
     if ! grep -q "DEFAULT_KSU_MNT_GROUP_ID" include/linux/susfs_def.h; then
         echo "→ Ajout de DEFAULT_KSU_MNT_GROUP_ID / DEFAULT_KSU_MNT_ID / VFSMOUNT_* dans susfs_def.h"
         cat >> include/linux/susfs_def.h << 'SUSFS_DEF_MOUNT_EOF'
 
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#ifndef DEFAULT_KSU_MNT_ID
 #define DEFAULT_KSU_MNT_ID       ((1 << 20) + 1)
+#endif
+#ifndef DEFAULT_KSU_MNT_GROUP_ID
 #define DEFAULT_KSU_MNT_GROUP_ID ((1 << 20) + 1)
+#endif
+#ifndef VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT
 #define VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT (1 << 25)
-#define CL_COPY_MNT_NS BIT(25)
+#endif
 #endif
 SUSFS_DEF_MOUNT_EOF
     fi
-else
-    echo "❌ include/linux/susfs_def.h n'existe pas"
 fi
 
 # --- 2. Ajouter les déclarations dans include/linux/susfs.h ---
 if [ -f "include/linux/susfs.h" ]; then
-    if ! grep -q "susfs_is_current_ksu_domain" include/linux/susfs.h; then
+    if ! grep -qE "bool susfs_is_current_ksu_domain" include/linux/susfs.h; then
         echo "→ Ajout de susfs_is_current_ksu_domain dans susfs.h"
         cat >> include/linux/susfs.h << 'SUSFS_H_DOMAIN_EOF'
 
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 bool susfs_is_current_ksu_domain(void);
 bool susfs_is_current_proc_umounted_for_zygote_next(void);
-extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
 #endif
 SUSFS_H_DOMAIN_EOF
     fi
 fi
 
-# --- 3. Ajouter les implémentations dans fs/susfs.c ---
+# --- 3. Ajouter les implémentations dans fs/susfs.c SI ABSENTES ---
 if [ -f "fs/susfs.c" ]; then
-    if ! grep -q "susfs_is_current_proc_umounted_for_zygote_next" fs/susfs.c; then
+    if ! grep -qE "^bool susfs_is_current_proc_umounted_for_zygote_next" fs/susfs.c; then
         echo "→ Ajout de susfs_is_current_proc_umounted_for_zygote_next dans susfs.c"
         cat >> fs/susfs.c << 'SUSFS_C_ZYGOTE_EOF'
 
@@ -631,72 +599,68 @@ bool susfs_is_current_proc_umounted_for_zygote_next(void)
     return false;
 }
 EXPORT_SYMBOL(susfs_is_current_proc_umounted_for_zygote_next);
+#endif
+SUSFS_C_ZYGOTE_EOF
+    else
+        echo "✅ susfs_is_current_proc_umounted_for_zygote_next déjà défini"
+    fi
 
+    if ! grep -qE "DEFINE_STATIC_KEY_TRUE\(susfs_is_sdcard_android_data_not_decrypted\)" fs/susfs.c; then
+        echo "→ Ajout de susfs_is_sdcard_android_data_not_decrypted dans susfs.c"
+        cat >> fs/susfs.c << 'SUSFS_C_SDCARD_EOF'
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 DEFINE_STATIC_KEY_TRUE(susfs_is_sdcard_android_data_not_decrypted);
 EXPORT_SYMBOL(susfs_is_sdcard_android_data_not_decrypted);
 #endif
-SUSFS_C_ZYGOTE_EOF
+SUSFS_C_SDCARD_EOF
+    else
+        echo "✅ susfs_is_sdcard_android_data_not_decrypted déjà défini"
     fi
 fi
 
-# --- 4. S'assurer que namespace.c inclut bien susfs_def.h et susfs.h ---
+# --- 4. S'assurer que namespace.c inclut les headers ---
 if [ -f "fs/namespace.c" ]; then
     if ! grep -q "susfs_def.h" fs/namespace.c; then
-        echo "→ Ajout de #include <linux/susfs_def.h> dans fs/namespace.c"
         sed -i '1i #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif' fs/namespace.c
-    else
-        echo "✅ susfs_def.h déjà inclus dans namespace.c"
     fi
     if ! grep -q "susfs.h" fs/namespace.c; then
-        echo "→ Ajout de #include <linux/susfs.h> dans fs/namespace.c"
         sed -i '1i #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs.h>\n#endif' fs/namespace.c
-    else
-        echo "✅ susfs.h déjà inclus dans namespace.c"
     fi
 fi
 
-echo "✅ Fix SuSFS pour namespace.c terminé"
+echo "✅ Fix SuSFS namespace.c terminé"
 
 # ==================== 4d. FIX CL_COPY_MNT_NS DANS fs/namespace.c ====================
 echo ""
 echo "=== Fix CL_COPY_MNT_NS dans fs/namespace.c ==="
 
 if [ -f "fs/namespace.c" ]; then
-    # Vérifier si CL_COPY_MNT_NS est défini quelque part
     if ! grep -q "#define CL_COPY_MNT_NS" fs/namespace.c; then
-        echo "→ Ajout de #define CL_COPY_MNT_NS dans fs/namespace.c"
-        # Insérer après les includes, avant le premier usage
+        echo "→ Ajout de #define CL_COPY_MNT_NS (0x80) dans fs/namespace.c"
         python3 - << 'PYEOF'
 import re
 with open('fs/namespace.c', 'r') as f:
     content = f.read()
 
-# Insérer la définition après les includes et avant le premier usage
 if '#define CL_COPY_MNT_NS' not in content:
-    # Trouver le premier #include
-    pattern = r'(#include\s+<linux/[^>]+>\s*\n)'
-    matches = list(re.finditer(pattern, content))
+    matches = list(re.finditer(r'(#include\s+[<"][^>"]+[>"]\s*\n)', content))
     if matches:
-        # Prendre le dernier include consécutif au début
-        last_include = matches[-1]
-        insert_pos = last_include.end()
-        
+        insert_pos = matches[-1].end()
         definition = '''
-/* --- SuSFS: CL_COPY_MNT_NS (Copy Mount Namespace flag) --- */
+/* --- SuSFS: CL_COPY_MNT_NS (défini manuellement car absent du fork) --- */
 #ifndef CL_COPY_MNT_NS
-#define CL_COPY_MNT_NS 0x00000001
+#define CL_COPY_MNT_NS 0x80
 #endif
 /* --- Fin SuSFS CL_COPY_MNT_NS --- */
 
 '''
         content = content[:insert_pos] + definition + content[insert_pos:]
-        
         with open('fs/namespace.c', 'w') as f:
             f.write(content)
-        print("✅ CL_COPY_MNT_NS ajouté dans fs/namespace.c")
+        print("✅ CL_COPY_MNT_NS = 0x80 ajouté dans fs/namespace.c")
     else:
-        print("⚠️ Aucun #include trouvé, ajout en début de fichier")
-        content = '#ifndef CL_COPY_MNT_NS\n#define CL_COPY_MNT_NS 0x00000001\n#endif\n\n' + content
+        content = '#ifndef CL_COPY_MNT_NS\n#define CL_COPY_MNT_NS 0x80\n#endif\n\n' + content
         with open('fs/namespace.c', 'w') as f:
             f.write(content)
 PYEOF
@@ -704,18 +668,16 @@ PYEOF
         echo "✅ CL_COPY_MNT_NS déjà défini dans fs/namespace.c"
     fi
 
-    # Vérifier aussi dans susfs_def.h
     if [ -f "include/linux/susfs_def.h" ]; then
         if ! grep -q "CL_COPY_MNT_NS" include/linux/susfs_def.h; then
-            echo "→ Ajout de CL_COPY_MNT_NS dans include/linux/susfs_def.h"
             cat >> include/linux/susfs_def.h << 'SUSFS_DEF_CL_EOF'
 
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 #ifndef CL_COPY_MNT_NS
-#define CL_COPY_MNT_NS 0x00000001
+#define CL_COPY_MNT_NS 0x80
+#endif
 #endif
 SUSFS_DEF_CL_EOF
-        else
-            echo "✅ CL_COPY_MNT_NS déjà dans susfs_def.h"
         fi
     fi
 fi
@@ -821,31 +783,26 @@ AR_aarch64_linux_android = "$AR_PATH"
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
 EOF
 
-echo "=== Suppression du Cargo.lock pour re-resoudre les dependances (revision figee introuvable) ==="
+echo "=== Suppression du Cargo.lock pour re-resoudre les dependances ==="
 rm -f Cargo.lock
 
 export CARGO_NET_GIT_FETCH_WITH_CLI=true
 cargo +nightly build --release --target aarch64-linux-android
 
-echo "=== Recherche du binaire ksud dans tout le repo cloné ==="
-find "$GITHUB_WORKSPACE/ksud-src" -type f -name "ksud" 2>/dev/null
 KSUD_BINARY=$(find "$GITHUB_WORKSPACE/ksud-src" -type f -name "ksud" -executable 2>/dev/null | head -1)
 
 if [ -z "$KSUD_BINARY" ]; then
     echo "❌ ksud introuvable après recherche automatique"
-    echo "=== Contenu de la racine du repo ksud-src (diagnostic) ==="
-    ls -la "$GITHUB_WORKSPACE/ksud-src/"
     exit 1
 fi
 
 echo "✅ ksud trouvé ici : $KSUD_BINARY"
 cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
-echo "✅ ksud (ReSukiSU) compilé"
 
 cd "$GITHUB_WORKSPACE"
 
-# ==================== 8. REPACK (avec ksud) ====================
+# ==================== 8. REPACK ====================
 echo "=== Téléchargement des images stock ==="
 cd $GITHUB_WORKSPACE
 
@@ -872,20 +829,12 @@ if [ -f "boot-stock.img" ]; then
   ./magiskboot unpack boot.img
   cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
 
-  echo "=== Installation de ksud dans le ramdisk ==="
+  echo "=== Installation de ksud dans le ramdisk (PAS de su dans /system/bin/) ==="
   ./magiskboot cpio ramdisk.cpio \
     "mkdir 0755 data" \
     "mkdir 0755 data/adb" \
     "mkdir 0755 data/adb/ksud" \
     "add 0755 data/adb/ksud/ksud $GITHUB_WORKSPACE/ksud"
-
-  cp "$GITHUB_WORKSPACE/ksud" local_su_binary
-  chmod 755 local_su_binary
-  ./magiskboot cpio ramdisk.cpio \
-    "mkdir 0755 system" \
-    "mkdir 0755 system/bin" \
-    "add 06755 system/bin/su ./local_su_binary"
-  rm -f local_su_binary
 
   ./magiskboot repack boot.img new-boot.img
   mv new-boot.img ../final_boot.img
