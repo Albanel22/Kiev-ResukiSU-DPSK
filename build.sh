@@ -490,7 +490,7 @@ echo "=== Fix des déclarations SuSFS manquantes (stat.c) ==="
 # --- 1. Fix include/linux/susfs.h : ajouter susfs_is_current_app_uid ---
 if [ -f "include/linux/susfs.h" ]; then
     if ! grep -q "susfs_is_current_app_uid" include/linux/susfs.h; then
-        echo "→ Ajout de susfs_is_current_app_uid dans include/linux/susfs.h"
+        echo "→ Ajout de susfs_is_current_app_uid dans susfs.h"
         cat >> include/linux/susfs.h << 'SUSFS_H_EOF'
 
 #ifdef CONFIG_KSU_SUSFS
@@ -503,7 +503,7 @@ fi
 # --- 2. Fix include/linux/susfs_def.h : ajouter STATX_SUS_KSTAT* ---
 if [ -f "include/linux/susfs_def.h" ]; then
     if ! grep -q "STATX_SUS_KSTAT" include/linux/susfs_def.h; then
-        echo "→ Ajout de STATX_SUS_KSTAT* dans include/linux/susfs_def.h"
+        echo "→ Ajout de STATX_SUS_KSTAT* dans susfs_def.h"
         cat >> include/linux/susfs_def.h << 'SUSFS_DEF_EOF'
 
 #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
@@ -514,27 +514,7 @@ SUSFS_DEF_EOF
     fi
 fi
 
-# --- 3. Fix fs/susfs.c : ajouter susfs_is_current_app_uid SI ABSENT ---
-if [ -f "fs/susfs.c" ]; then
-    if ! grep -q "susfs_is_current_app_uid" fs/susfs.c; then
-        echo "→ Ajout de susfs_is_current_app_uid dans fs/susfs.c"
-        cat >> fs/susfs.c << 'SUSFS_C_EOF'
-
-#ifdef CONFIG_KSU_SUSFS
-bool susfs_is_current_app_uid(void)
-{
-    const struct cred *cred = current_cred();
-    return (cred->uid.val >= 10000 && cred->uid.val <= 19999);
-}
-EXPORT_SYMBOL(susfs_is_current_app_uid);
-#endif
-SUSFS_C_EOF
-    else
-        echo "✅ susfs_is_current_app_uid déjà défini dans susfs.c"
-    fi
-fi
-
-# --- 4. Fix fs/stat.c : s'assurer que susfs_def.h et susfs.h sont inclus ---
+# --- 3. Fix fs/stat.c : s'assurer que susfs_def.h et susfs.h sont inclus ---
 if [ -f "fs/stat.c" ]; then
     if ! grep -q "susfs_def.h" fs/stat.c; then
         sed -i '1i #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif' fs/stat.c
@@ -544,6 +524,7 @@ if [ -f "fs/stat.c" ]; then
     fi
 fi
 
+# NE PAS toucher à fs/susfs.c (le patch le fournit déjà)
 echo "✅ Fix SuSFS stat.c terminé"
 
 # ==================== 4c. FIX DES DÉFINITIONS SUSFS POUR fs/namespace.c ====================
@@ -586,39 +567,9 @@ SUSFS_H_DOMAIN_EOF
     fi
 fi
 
-# --- 3. Ajouter les implémentations dans fs/susfs.c SI ABSENTES ---
-if [ -f "fs/susfs.c" ]; then
-    if ! grep -q "susfs_is_current_proc_umounted_for_zygote_next" fs/susfs.c; then
-        echo "→ Ajout de susfs_is_current_proc_umounted_for_zygote_next dans susfs.c"
-        cat >> fs/susfs.c << 'SUSFS_C_ZYGOTE_EOF'
+# NE PAS toucher à fs/susfs.c (le patch le fournit déjà)
 
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-bool susfs_is_current_proc_umounted_for_zygote_next(void)
-{
-    return false;
-}
-EXPORT_SYMBOL(susfs_is_current_proc_umounted_for_zygote_next);
-#endif
-SUSFS_C_ZYGOTE_EOF
-    else
-        echo "✅ susfs_is_current_proc_umounted_for_zygote_next déjà défini"
-    fi
-
-    if ! grep -q "susfs_is_sdcard_android_data_not_decrypted" fs/susfs.c; then
-        echo "→ Ajout de susfs_is_sdcard_android_data_not_decrypted dans susfs.c"
-        cat >> fs/susfs.c << 'SUSFS_C_SDCARD_EOF'
-
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-DEFINE_STATIC_KEY_TRUE(susfs_is_sdcard_android_data_not_decrypted);
-EXPORT_SYMBOL(susfs_is_sdcard_android_data_not_decrypted);
-#endif
-SUSFS_C_SDCARD_EOF
-    else
-        echo "✅ susfs_is_sdcard_android_data_not_decrypted déjà défini"
-    fi
-fi
-
-# --- 4. S'assurer que namespace.c inclut les headers ---
+# --- 3. S'assurer que namespace.c inclut les headers ---
 if [ -f "fs/namespace.c" ]; then
     if ! grep -q "susfs_def.h" fs/namespace.c; then
         sed -i '1i #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif' fs/namespace.c
