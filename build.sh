@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Build ReSukiSU + SuSFS (JackA1ltman/NonGKI_Kernel_Build_2nd, mainline) pour kiev (SM8250) ==="
+echo "=== Build ReSukiSU + SuSFS (JackA1ltman mainline) pour kiev (SM8250) ==="
 df -h
 
 # ==================== 0. ENVIRONNEMENT ====================
@@ -38,7 +38,6 @@ if [ ! -d "drivers/kernelsu" ]; then
 fi
 echo "✅ drivers/kernelsu/ présent"
 
-# Forcer drivers/Makefile
 if [ -f "drivers/Makefile" ]; then
     if ! grep -q "kernelsu" drivers/Makefile; then
         echo "" >> drivers/Makefile
@@ -47,7 +46,6 @@ if [ -f "drivers/Makefile" ]; then
     fi
 fi
 
-# Forcer drivers/Kconfig
 if [ -f "drivers/Kconfig" ]; then
     if ! grep -q "kernelsu/Kconfig" drivers/Kconfig; then
         sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
@@ -485,13 +483,13 @@ if [ -f "fs/proc/task_mmu.c" ]; then
     sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
 fi
 
-# ==================== 4b. FIX DES DÉCLARATIONS SUSFS MANQUANTES ====================
+# ==================== 4b. FIX DES DÉCLARATIONS SUSFS MANQUANTES (stat.c) ====================
 echo ""
 echo "=== Fix des déclarations SuSFS manquantes (stat.c) ==="
 
 # --- 1. Fix include/linux/susfs.h : ajouter susfs_is_current_app_uid ---
 if [ -f "include/linux/susfs.h" ]; then
-    if ! grep -qE "bool susfs_is_current_app_uid" include/linux/susfs.h; then
+    if ! grep -q "susfs_is_current_app_uid" include/linux/susfs.h; then
         echo "→ Ajout de susfs_is_current_app_uid dans include/linux/susfs.h"
         cat >> include/linux/susfs.h << 'SUSFS_H_EOF'
 
@@ -518,7 +516,7 @@ fi
 
 # --- 3. Fix fs/susfs.c : ajouter susfs_is_current_app_uid SI ABSENT ---
 if [ -f "fs/susfs.c" ]; then
-    if ! grep -qE "^bool susfs_is_current_app_uid" fs/susfs.c; then
+    if ! grep -q "susfs_is_current_app_uid" fs/susfs.c; then
         echo "→ Ajout de susfs_is_current_app_uid dans fs/susfs.c"
         cat >> fs/susfs.c << 'SUSFS_C_EOF'
 
@@ -575,13 +573,14 @@ fi
 
 # --- 2. Ajouter les déclarations dans include/linux/susfs.h ---
 if [ -f "include/linux/susfs.h" ]; then
-    if ! grep -qE "bool susfs_is_current_ksu_domain" include/linux/susfs.h; then
+    if ! grep -q "susfs_is_current_ksu_domain" include/linux/susfs.h; then
         echo "→ Ajout de susfs_is_current_ksu_domain dans susfs.h"
         cat >> include/linux/susfs.h << 'SUSFS_H_DOMAIN_EOF'
 
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 bool susfs_is_current_ksu_domain(void);
 bool susfs_is_current_proc_umounted_for_zygote_next(void);
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
 #endif
 SUSFS_H_DOMAIN_EOF
     fi
@@ -589,7 +588,7 @@ fi
 
 # --- 3. Ajouter les implémentations dans fs/susfs.c SI ABSENTES ---
 if [ -f "fs/susfs.c" ]; then
-    if ! grep -qE "^bool susfs_is_current_proc_umounted_for_zygote_next" fs/susfs.c; then
+    if ! grep -q "susfs_is_current_proc_umounted_for_zygote_next" fs/susfs.c; then
         echo "→ Ajout de susfs_is_current_proc_umounted_for_zygote_next dans susfs.c"
         cat >> fs/susfs.c << 'SUSFS_C_ZYGOTE_EOF'
 
@@ -605,7 +604,7 @@ SUSFS_C_ZYGOTE_EOF
         echo "✅ susfs_is_current_proc_umounted_for_zygote_next déjà défini"
     fi
 
-    if ! grep -qE "DEFINE_STATIC_KEY_TRUE\(susfs_is_sdcard_android_data_not_decrypted\)" fs/susfs.c; then
+    if ! grep -q "susfs_is_sdcard_android_data_not_decrypted" fs/susfs.c; then
         echo "→ Ajout de susfs_is_sdcard_android_data_not_decrypted dans susfs.c"
         cat >> fs/susfs.c << 'SUSFS_C_SDCARD_EOF'
 
@@ -683,61 +682,6 @@ SUSFS_DEF_CL_EOF
 fi
 
 echo "✅ Fix CL_COPY_MNT_NS terminé"
-
-# ==================== 4e. FIX DECLARATION susfs_is_sdcard_android_data_not_decrypted ====================
-echo ""
-echo "=== Fix declaration susfs_is_sdcard_android_data_not_decrypted ==="
-
-# Ajouter dans susfs.h
-if [ -f "include/linux/susfs.h" ]; then
-    if ! grep -q "susfs_is_sdcard_android_data_not_decrypted" include/linux/susfs.h; then
-        echo "→ Ajout de susfs_is_sdcard_android_data_not_decrypted dans susfs.h"
-        cat >> include/linux/susfs.h << 'SUSFS_H_SDCARD_EOF'
-
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
-#endif
-SUSFS_H_SDCARD_EOF
-    else
-        echo "✅ susfs_is_sdcard_android_data_not_decrypted déjà dans susfs.h"
-    fi
-fi
-
-# Ajouter directement dans namespace.c (fallback sécurité)
-if [ -f "fs/namespace.c" ]; then
-    if ! grep -q "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted" fs/namespace.c; then
-        echo "→ Ajout de extern susfs_is_sdcard_android_data_not_decrypted dans namespace.c"
-        python3 - << 'PYEOF'
-import re
-with open('fs/namespace.c', 'r') as f:
-    content = f.read()
-
-if 'extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted' not in content:
-    matches = list(re.finditer(r'(#include\s+[<"][^>"]+[>"]\s*\n)', content))
-    if matches:
-        insert_pos = matches[-1].end()
-        decl = '''
-/* --- SuSFS: declaration static_key (fallback) --- */
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
-#endif
-/* --- Fin SuSFS --- */
-
-'''
-        content = content[:insert_pos] + decl + content[insert_pos:]
-        with open('fs/namespace.c', 'w') as f:
-            f.write(content)
-        print("✅ Declaration ajoutée dans namespace.c")
-PYEOF
-    fi
-fi
-
-# S'assurer que susfs.h est inclus dans namespace.c
-if [ -f "fs/namespace.c" ] && ! grep -q "susfs.h" fs/namespace.c; then
-    sed -i '1i #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs.h>\n#endif' fs/namespace.c
-fi
-
-echo "✅ Fix susfs_is_sdcard_android_data_not_decrypted terminé"
 
 # ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
