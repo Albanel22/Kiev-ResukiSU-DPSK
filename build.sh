@@ -79,27 +79,67 @@ fi
 # ==================== 2d. NEUTRALISATION DES CHECKS INLINE/MANUAL HOOK ====================
 echo ""
 echo "=== Diagnostic : position des checks ==="
-echo "--- inline_hook_check.mk ---"
 find . -name "inline_hook_check.mk" 2>/dev/null || echo "(aucun)"
-echo "--- manual_hook_check.mk ---"
 find . -name "manual_hook_check.mk" 2>/dev/null || echo "(aucun)"
 echo ""
 
 echo "=== Neutralisation des checks inline/manual hook ==="
 find . -name "inline_hook_check.mk" -type f 2>/dev/null | while read f; do
     echo "→ Neutralisation : $f"
-    echo "# Check neutralisé (mode SuSFS — hooks gérés par SuSFS en interne)" > "$f"
+    echo "# Check neutralisé (mode SuSFS)" > "$f"
 done
 
 find . -name "manual_hook_check.mk" -type f 2>/dev/null | while read f; do
     echo "→ Neutralisation : $f"
-    echo "# Check neutralisé (mode SuSFS — hooks gérés par SuSFS en interne)" > "$f"
+    echo "# Check neutralisé (mode SuSFS)" > "$f"
 done
 
 echo "✅ Checks neutralisés"
 echo ""
 
-# ==================== 3. HOOKS ADAPTÉS (ifdef CONFIG_KSU) ====================
+# ==================== 2e. FIX BUG SUSFS : ksu_install_fd O_CLOEXEC ====================
+echo ""
+echo "=== Fix bug SUSFS : ksu_install_fd (O_CLOEXEC) ==="
+echo "=== Référence : SukiSU-Ultra Issue #799 — SUSFS 2 affecte la visibilité du driver ==="
+
+# Trouver le fichier contenant ksu_install_fd
+KSU_INSTALL_FD_FILE=$(grep -rl "ksu_install_fd" drivers/kernelsu/ 2>/dev/null | head -1)
+
+if [ -z "$KSU_INSTALL_FD_FILE" ]; then
+    KSU_INSTALL_FD_FILE=$(grep -rl "ksu_install_fd" drivers/ 2>/dev/null | head -1)
+fi
+
+if [ -n "$KSU_INSTALL_FD_FILE" ]; then
+    echo "✅ Fichier trouvé : $KSU_INSTALL_FD_FILE"
+    cp "$KSU_INSTALL_FD_FILE" "$KSU_INSTALL_FD_FILE.bak"
+
+    # Fix 1 : get_unused_fd_flags(O_CLOEXEC) → get_unused_fd_flags(0)
+    sed -i 's/get_unused_fd_flags(O_CLOEXEC)/get_unused_fd_flags(0)/g' "$KSU_INSTALL_FD_FILE"
+
+    # Fix 2 : anon_inode_getfile O_RDWR | O_CLOEXEC → O_RDWR
+    sed -i 's/O_RDWR | O_CLOEXEC/O_RDWR/g' "$KSU_INSTALL_FD_FILE"
+
+    # Vérifications
+    if grep -q "get_unused_fd_flags(0)" "$KSU_INSTALL_FD_FILE"; then
+        echo "✅ get_unused_fd_flags(0) appliqué"
+    else
+        echo "⚠️  get_unused_fd_flags(0) non trouvé"
+    fi
+
+    if ! grep -q "O_CLOEXEC" "$KSU_INSTALL_FD_FILE"; then
+        echo "✅ O_CLOEXEC retiré partout"
+    else
+        echo "⚠️  O_CLOEXEC encore présent :"
+        grep -n "O_CLOEXEC" "$KSU_INSTALL_FD_FILE"
+    fi
+else
+    echo "❌ ksu_install_fd introuvable — fix non appliqué"
+fi
+
+echo "✅ Fix ksu_install_fd terminé"
+echo ""
+
+# ==================== 3. HOOKS MANUELS (ifdef CONFIG_KSU) ====================
 echo ""
 echo "=== Hooks ReSukiSU (ifdef CONFIG_KSU) ==="
 
@@ -109,7 +149,6 @@ if ! grep -q "ksu_handle_execveat" fs/exec.c; then
 import re
 with open('fs/exec.c', 'r') as f:
     content = f.read()
-
 if 'ksu_handle_execveat' not in content:
     extern_decl = '''
 #ifdef CONFIG_KSU
@@ -125,7 +164,6 @@ extern int ksu_handle_post_execveat(int *fd, struct filename **filename_ptr,
     if re.search(pattern, content):
         content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
         print("OK: externs execveat ajoutés")
-
     old = '''static int do_execveat_common(int fd, struct filename *filename,
 			      struct user_arg_ptr argv,
 			      struct user_arg_ptr envp,
@@ -141,8 +179,7 @@ extern int ksu_handle_post_execveat(int *fd, struct filename **filename_ptr,
 #endif'''
     if old in content:
         content = content.replace(old, new, 1)
-        print("OK: execveat hooké dans do_execveat_common")
-
+        print("OK: execveat hooké")
     old2 = '''	struct user_arg_ptr argv = { .ptr.native = __argv };
 	struct user_arg_ptr envp = { .ptr.native = __envp };
 	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);'''
@@ -159,8 +196,7 @@ extern int ksu_handle_post_execveat(int *fd, struct filename **filename_ptr,
 #endif'''
     if old2 in content:
         content = content.replace(old2, new2, 1)
-        print("OK: post_execveat ajouté dans do_execve")
-
+        print("OK: post_execveat ajouté")
 with open('fs/exec.c', 'w') as f:
     f.write(content)
 PYEOF
@@ -173,7 +209,6 @@ if ! grep -q "ksu_handle_faccessat" fs/open.c; then
 import re
 with open('fs/open.c', 'r') as f:
     content = f.read()
-
 if 'ksu_handle_faccessat' not in content:
     extern_decl = '''
 #ifdef CONFIG_KSU
@@ -184,10 +219,10 @@ extern int ksu_handle_faccessat(int *dfd, struct filename **filename, int *mode,
     pattern = r'(SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\))'
     if re.search(pattern, content):
         content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-        old_body = '''SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
+        old = '''SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
 {
 	return do_faccessat(dfd, filename, mode);'''
-        new_body = '''SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
+        new = '''SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
 {
 #ifdef CONFIG_KSU
 	struct filename *fn = getname(filename);
@@ -197,27 +232,22 @@ extern int ksu_handle_faccessat(int *dfd, struct filename **filename, int *mode,
 	}
 #endif
 	return do_faccessat(dfd, filename, mode);'''
-        if old_body in content:
-            content = content.replace(old_body, new_body, 1)
+        if old in content:
+            content = content.replace(old, new, 1)
             print("OK: faccessat hooké")
-        else:
-            print("WARN: faccessat pattern non trouvé")
-
 with open('fs/open.c', 'w') as f:
     f.write(content)
 PYEOF
   python3 /tmp/hook_faccessat.py
 fi
 
-# --- stat (uniquement ksu_handle_stat via newfstatat) ---
+# --- stat (ksu_handle_stat uniquement, via newfstatat) ---
 if ! grep -q "ksu_handle_stat" fs/stat.c; then
   cat > /tmp/hook_stat.py << 'PYEOF'
 import re
 with open('fs/stat.c', 'r') as f:
     content = f.read()
-
 if 'ksu_handle_stat' not in content:
-    # Déclaration extern : UNIQUEMENT ksu_handle_stat
     extern_decl = '''
 #ifdef CONFIG_KSU
 __attribute__((hot))
@@ -228,8 +258,6 @@ extern int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
     if re.search(pattern, content):
         content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
         print("OK: extern ksu_handle_stat ajouté")
-
-    # Hook dans newfstatat UNIQUEMENT
     old = '''	struct kstat stat;
 	int error;
 
@@ -246,23 +274,150 @@ extern int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
 	return vfs_fstatat(dfd, filename, &stat, flag);'''
     if old in content:
         content = content.replace(old, new, 1)
-        print("OK: stat hooké (newfstatat uniquement)")
-    else:
-        print("WARN: newfstatat pattern non trouvé")
-
+        print("OK: stat hooké (newfstatat)")
 with open('fs/stat.c', 'w') as f:
     f.write(content)
 PYEOF
   python3 /tmp/hook_stat.py
 fi
 
-echo "✅ Hooks appliqués (execveat, faccessat, stat via newfstatat)"
+# --- sys_read (init.rc) ---
+if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
+  cat > /tmp/hook_sys_read.py << 'PYEOF'
+import re
+with open('fs/read_write.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_sys_read' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU
+__attribute__((cold))
+extern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);
+#endif
+'''
+    pattern = r'(SYSCALL_DEFINE3\(read, unsigned int, fd, char __user \*, buf, size_t, count\))'
+    if re.search(pattern, content):
+        content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+        old = '''SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+{'''
+        new = '''SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+{
+#ifdef CONFIG_KSU
+	ksu_handle_sys_read(fd, &buf, &count);
+#endif'''
+        if old in content:
+            content = content.replace(old, new, 1)
+            print("OK: sys_read hooké")
+with open('fs/read_write.c', 'w') as f:
+    f.write(content)
+PYEOF
+  python3 /tmp/hook_sys_read.py
+fi
+
+# --- setresuid ---
+if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
+  cat > /tmp/hook_setresuid.py << 'PYEOF'
+import re
+with open('kernel/sys.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_setresuid' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU
+extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
+#endif
+'''
+    pattern = r'(long __sys_setresuid)'
+    if re.search(pattern, content):
+        content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+        old = '''	bool ruid_new, euid_new, suid_new;'''
+        new = '''	bool ruid_new, euid_new, suid_new;
+#ifdef CONFIG_KSU
+	(void)ksu_handle_setresuid(ruid, euid, suid);
+#endif'''
+        if old in content:
+            content = content.replace(old, new, 1)
+            print("OK: setresuid hooké")
+with open('kernel/sys.c', 'w') as f:
+    f.write(content)
+PYEOF
+  python3 /tmp/hook_setresuid.py
+fi
+
+# --- sys_reboot ---
+if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
+  cat > /tmp/hook_reboot.py << 'PYEOF'
+import re
+with open('kernel/reboot.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_sys_reboot' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU
+extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
+#endif
+'''
+    pattern = r'(SYSCALL_DEFINE4\(reboot)'
+    if re.search(pattern, content):
+        content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+        old = '''	char buffer[256];
+	int ret = 0;'''
+        new = '''	char buffer[256];
+	int ret = 0;
+#ifdef CONFIG_KSU
+	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
+#endif'''
+        if old in content:
+            content = content.replace(old, new, 1)
+            print("OK: sys_reboot hooké")
+with open('kernel/reboot.c', 'w') as f:
+    f.write(content)
+PYEOF
+  python3 /tmp/hook_reboot.py
+fi
+
+# --- input_event ---
+if ! grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
+  cat > /tmp/hook_input.py << 'PYEOF'
+import re
+with open('drivers/input/input.c', 'r') as f:
+    content = f.read()
+if 'ksu_handle_input_handle_event' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU
+extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
+#endif
+'''
+    pattern = r'(void input_event\(struct input_dev \*dev,)'
+    if re.search(pattern, content):
+        content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+        old = '''void input_event(struct input_dev *dev,
+		 unsigned int type, unsigned int code, int value)
+{
+	unsigned long flags;
+
+	if (is_event_supported(type, dev->evbit, EV_MAX)) {'''
+        new = '''void input_event(struct input_dev *dev,
+		 unsigned int type, unsigned int code, int value)
+{
+	unsigned long flags;
+
+#ifdef CONFIG_KSU
+	ksu_handle_input_handle_event(&type, &code, &value);
+#endif
+
+	if (is_event_supported(type, dev->evbit, EV_MAX)) {'''
+        if old in content:
+            content = content.replace(old, new, 1)
+            print("OK: input_event hooké")
+with open('drivers/input/input.c', 'w') as f:
+    f.write(content)
+PYEOF
+  python3 /tmp/hook_input.py
+fi
+
+echo "✅ Hooks appliqués (execveat, faccessat, stat, sys_read, setresuid, sys_reboot, input)"
 
 # ==================== 3.1. NETTOYAGE DES APPELS EXCLUSIFS MANUAL_HOOK ====================
 echo ""
-echo "=== Nettoyage des appels ksu_handle_newfstat_ret/fstat64_ret ==="
-echo "=== (Ces fonctions n'existent PAS avec CONFIG_KSU_SUSFS=y) ==="
-
+echo "=== Nettoyage des appels newfstat_ret/fstat64_ret (exclusifs MANUAL_HOOK) ==="
 python3 - << 'PYEOF'
 import re
 with open('fs/stat.c', 'r') as f:
@@ -280,7 +435,7 @@ for pat in patterns_to_remove:
 content = re.sub(r'ksu_handle_newfstat_ret\([^;]+\);', '', content)
 content = re.sub(r'ksu_handle_fstat64_ret\([^;]+\);', '', content)
 
-# Retirer les déclarations extern de ces fonctions
+# Retirer les déclarations extern
 content = re.sub(r'__attribute__\(\(hot\)\)\s*\nextern void ksu_handle_newfstat_ret\([^;]+\);', '', content)
 content = re.sub(r'__attribute__\(\(hot\)\)\s*\nextern void ksu_handle_fstat64_ret\([^;]+\);', '', content)
 content = re.sub(r'extern void ksu_handle_newfstat_ret\([^;]+\);', '', content)
@@ -294,7 +449,6 @@ with open('fs/stat.c', 'w') as f:
 print("OK: nettoyage stat.c effectué")
 PYEOF
 
-echo "--- Vérification post-nettoyage ---"
 if grep -q "ksu_handle_newfstat_ret\|ksu_handle_fstat64_ret" fs/stat.c; then
     echo "⚠️  Appels résiduels :"
     grep -n "ksu_handle_newfstat_ret\|ksu_handle_fstat64_ret" fs/stat.c
@@ -304,17 +458,14 @@ else
 fi
 
 if grep -q "ksu_handle_stat" fs/stat.c; then
-    echo "✅ ksu_handle_stat présent (nécessaire pour SuSFS)"
+    echo "✅ ksu_handle_stat présent"
 else
     echo "⚠️  ksu_handle_stat absent"
 fi
 
-echo "✅ Nettoyage terminé"
-
 # ==================== 3.4. disable_seccomp() ====================
 echo ""
 echo "=== Ajout de disable_seccomp() dans ReSukiSU ==="
-
 if ! grep -rq "disable_seccomp" drivers/kernelsu/ 2>/dev/null; then
     KSU_CORE_FILE=""
     if [ -f "drivers/kernelsu/core_hook.c" ]; then
@@ -322,7 +473,6 @@ if ! grep -rq "disable_seccomp" drivers/kernelsu/ 2>/dev/null; then
     elif [ -f "drivers/kernelsu/ksu.c" ]; then
         KSU_CORE_FILE="drivers/kernelsu/ksu.c"
     fi
-
     if [ -n "$KSU_CORE_FILE" ]; then
         cat >> "$KSU_CORE_FILE" << 'SECCOMP_EOF'
 
@@ -336,7 +486,6 @@ static void disable_seccomp(void)
 #else
 	current_thread_info()->flags &= ~(TIF_SECCOMP | _TIF_SECCOMP);
 #endif
-
 #ifdef CONFIG_SECCOMP
 	current->seccomp.mode = 0;
 	current->seccomp.filter = NULL;
