@@ -684,6 +684,61 @@ fi
 
 echo "✅ Fix CL_COPY_MNT_NS terminé"
 
+# ==================== 4e. FIX DECLARATION susfs_is_sdcard_android_data_not_decrypted ====================
+echo ""
+echo "=== Fix declaration susfs_is_sdcard_android_data_not_decrypted ==="
+
+# Ajouter dans susfs.h
+if [ -f "include/linux/susfs.h" ]; then
+    if ! grep -q "susfs_is_sdcard_android_data_not_decrypted" include/linux/susfs.h; then
+        echo "→ Ajout de susfs_is_sdcard_android_data_not_decrypted dans susfs.h"
+        cat >> include/linux/susfs.h << 'SUSFS_H_SDCARD_EOF'
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+#endif
+SUSFS_H_SDCARD_EOF
+    else
+        echo "✅ susfs_is_sdcard_android_data_not_decrypted déjà dans susfs.h"
+    fi
+fi
+
+# Ajouter directement dans namespace.c (fallback sécurité)
+if [ -f "fs/namespace.c" ]; then
+    if ! grep -q "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted" fs/namespace.c; then
+        echo "→ Ajout de extern susfs_is_sdcard_android_data_not_decrypted dans namespace.c"
+        python3 - << 'PYEOF'
+import re
+with open('fs/namespace.c', 'r') as f:
+    content = f.read()
+
+if 'extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted' not in content:
+    matches = list(re.finditer(r'(#include\s+[<"][^>"]+[>"]\s*\n)', content))
+    if matches:
+        insert_pos = matches[-1].end()
+        decl = '''
+/* --- SuSFS: declaration static_key (fallback) --- */
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+#endif
+/* --- Fin SuSFS --- */
+
+'''
+        content = content[:insert_pos] + decl + content[insert_pos:]
+        with open('fs/namespace.c', 'w') as f:
+            f.write(content)
+        print("✅ Declaration ajoutée dans namespace.c")
+PYEOF
+    fi
+fi
+
+# S'assurer que susfs.h est inclus dans namespace.c
+if [ -f "fs/namespace.c" ] && ! grep -q "susfs.h" fs/namespace.c; then
+    sed -i '1i #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs.h>\n#endif' fs/namespace.c
+fi
+
+echo "✅ Fix susfs_is_sdcard_android_data_not_decrypted terminé"
+
 # ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
 export ARCH=arm64
