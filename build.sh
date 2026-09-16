@@ -115,6 +115,88 @@ fi
 
 echo "✅ Fix uapi terminé"
 
+# ==================== 2e. FIX DES SYMBOLES KSU MANQUANTS ====================
+echo ""
+echo "=== Fix des symboles KSU manquants (ksu_cred, etc.) ==="
+
+# Chercher où ksu_cred est défini
+echo "--- Recherche de ksu_cred ---"
+grep -rn "ksu_cred" drivers/kernelsu/ 2>/dev/null | head -20
+
+# Si le fichier où ksu_cred est défini n'a pas la déclaration extern,
+# on l'ajoute dans les headers
+if [ -f "drivers/kernelsu/runtime/ksud_integration.c" ]; then
+    echo "→ Vérification de ksud_integration.c"
+fi
+
+# Créer un header central avec les déclarations manquantes
+cat > drivers/kernelsu/include/ksu_globals.h << 'KSU_H_EOF'
+#ifndef __KSU_GLOBALS_H
+#define __KSU_GLOBALS_H
+
+#include <linux/cred.h>
+#include <linux/types.h>
+
+/* Déclarations globales KSU */
+#ifdef CONFIG_KSU
+extern const struct cred *ksu_cred;
+extern u32 ksu_ksu_sid;
+extern u32 ksu_priv_app_sid;
+#endif
+
+#endif /* __KSU_GLOBALS_H */
+KSU_H_EOF
+
+echo "✅ Création de drivers/kernelsu/include/ksu_globals.h"
+
+# Vérifier que ksu_cred est bien défini quelque part
+KSU_CRED_DEF=$(grep -rn "const struct cred \*ksu_cred" drivers/kernelsu/ 2>/dev/null | grep -v "extern" | head -1)
+if [ -z "$KSU_CRED_DEF" ]; then
+    echo "⚠️ ksu_cred n'est défini nulle part — ajout dans un fichier central"
+    # Ajouter la définition dans ksud_integration.c (le plus probable)
+    if [ -f "drivers/kernelsu/runtime/ksud_integration.c" ]; then
+        cat >> drivers/kernelsu/runtime/ksud_integration.c << 'KSU_C_EOF'
+
+/* Variable globale ksu_cred (fallback si absente) */
+const struct cred *ksu_cred = NULL;
+EXPORT_SYMBOL(ksu_cred);
+KSU_C_EOF
+        echo "✅ ksu_cred ajouté dans ksud_integration.c"
+    else
+        # Chercher un fichier .c principal
+        KSU_CORE=$(find drivers/kernelsu -name "core.c" -o -name "ksu.c" -o -name "init.c" 2>/dev/null | head -1)
+        if [ -n "$KSU_CORE" ]; then
+            cat >> "$KSU_CORE" << 'KSU_C_EOF'
+
+/* Variable globale ksu_cred (fallback si absente) */
+const struct cred *ksu_cred = NULL;
+EXPORT_SYMBOL(ksu_cred);
+KSU_C_EOF
+            echo "✅ ksu_cred ajouté dans $KSU_CORE"
+        fi
+    fi
+else
+    echo "✅ ksu_cred déjà défini : $KSU_CRED_DEF"
+fi
+
+# Ajouter l'include dans allowlist.c
+if [ -f "drivers/kernelsu/policy/allowlist.c" ]; then
+    if ! grep -q "ksu_globals.h" drivers/kernelsu/policy/allowlist.c; then
+        echo "→ Ajout de #include \"ksu_globals.h\" dans allowlist.c"
+        sed -i '1i #include "ksu_globals.h"' drivers/kernelsu/policy/allowlist.c
+    fi
+fi
+
+# Ajouter -I$(src)/include dans le Kbuild
+if [ -f "drivers/kernelsu/Kbuild" ]; then
+    if ! grep -q '\-I\$(src)/include' drivers/kernelsu/Kbuild; then
+        sed -i '/^ccflags-y += -I\$(src)/i ccflags-y += -I$(src)/include' drivers/kernelsu/Kbuild
+        echo "→ Ajout de -I\$(src)/include dans Kbuild"
+    fi
+fi
+
+echo "✅ Fix des symboles KSU terminé"
+
 # ==================== 2c. CONTOURNEMENT DU CHECK SUBMODULE ====================
 echo ""
 echo "=== Contournement du check git submodule dans Kbuild ==="
