@@ -474,12 +474,11 @@ find . -name "*.rej" -type f -delete 2>/dev/null || true
 
 echo "✅ SuSFS intégré proprement"
 
-# ==================== Correction déclarations SuSFS (super.c) ====================
-echo "=== Correction des déclarations manquantes dans fs/super.c ==="
+# ==================== Correction complète des déclarations SuSFS ====================
+echo "=== Correction complète des déclarations SuSFS ==="
 
 mkdir -p include/linux
 
-# Créer / compléter le header
 cat > include/linux/susfs_def.h << 'EOF'
 #ifndef _LINUX_SUSFS_DEF_H
 #define _LINUX_SUSFS_DEF_H
@@ -487,42 +486,70 @@ cat > include/linux/susfs_def.h << 'EOF'
 #include <linux/types.h>
 #include <linux/static_key.h>
 #include <linux/jump_label.h>
+#include <linux/string.h>
 
-#ifndef DEFAULT_KSU_MNT_MINOR_DEV
-#define DEFAULT_KSU_MNT_MINOR_DEV  (1 << 20)
+/* Constantes */
+#ifndef DEFAULT_KSU_MNT_ID
+#define DEFAULT_KSU_MNT_ID           1000
 #endif
 
+#ifndef DEFAULT_KSU_MNT_MINOR_DEV
+#define DEFAULT_KSU_MNT_MINOR_DEV    (1 << 20)
+#endif
+
+/* Static key */
 extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+
+/* Fonctions */
 bool susfs_is_current_ksu_domain(void);
+bool susfs_is_current_app_uid(void);
+bool susfs_is_current_proc_umounted(void);
+bool susfs_starts_with(const char *str, const char *prefix);
 
 #endif /* _LINUX_SUSFS_DEF_H */
 EOF
 
-# Forcer l'include en haut de fs/super.c
-if [ -f fs/super.c ]; then
-  if ! grep -q "susfs_def.h" fs/super.c; then
-    sed -i '1i #include <linux/susfs_def.h>' fs/super.c
+# Forcer l'include dans les fichiers qui plantent
+for f in fs/super.c fs/namespace.c fs/notify/fdinfo.c kernel/kallsyms.c; do
+  if [ -f "$f" ] && ! grep -q "susfs_def.h" "$f"; then
+    sed -i '1i #include <linux/susfs_def.h>' "$f"
   fi
-fi
+done
 
-# Stubs minimaux (seulement si le fichier susfs.c existe)
+# Stubs dans fs/susfs.c
 if [ -f fs/susfs.c ]; then
-  if ! grep -q "susfs_is_sdcard_android_data_not_decrypted" fs/susfs.c; then
-    cat >> fs/susfs.c << 'EOF'
+  # Nettoyage éventuel
+  sed -i '/susfs_is_current_ksu_domain/,/^}/d' fs/susfs.c 2>/dev/null || true
+  sed -i '/susfs_is_sdcard_android_data_not_decrypted/d' fs/susfs.c 2>/dev/null || true
+  sed -i '/susfs_is_current_app_uid/,/^}/d' fs/susfs.c 2>/dev/null || true
+  sed -i '/susfs_is_current_proc_umounted/,/^}/d' fs/susfs.c 2>/dev/null || true
+  sed -i '/susfs_starts_with/,/^}/d' fs/susfs.c 2>/dev/null || true
 
+  cat >> fs/susfs.c << 'EOF'
+
+/* ===== Stubs minimaux ===== */
 DEFINE_STATIC_KEY_TRUE(susfs_is_sdcard_android_data_not_decrypted);
 EXPORT_SYMBOL_GPL(susfs_is_sdcard_android_data_not_decrypted);
 
-bool susfs_is_current_ksu_domain(void)
-{
-	return false;
-}
+bool susfs_is_current_ksu_domain(void) { return false; }
 EXPORT_SYMBOL_GPL(susfs_is_current_ksu_domain);
+
+bool susfs_is_current_app_uid(void) { return false; }
+EXPORT_SYMBOL_GPL(susfs_is_current_app_uid);
+
+bool susfs_is_current_proc_umounted(void) { return false; }
+EXPORT_SYMBOL_GPL(susfs_is_current_proc_umounted);
+
+bool susfs_starts_with(const char *str, const char *prefix)
+{
+	size_t len = strlen(prefix);
+	return strncmp(str, prefix, len) == 0;
+}
+EXPORT_SYMBOL_GPL(susfs_starts_with);
 EOF
-  fi
 fi
 
-echo "✅ Déclarations SuSFS corrigées"
+echo "✅ Déclarations SuSFS complètes injectées"
 
 # ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
