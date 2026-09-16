@@ -350,7 +350,7 @@ if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
   cp -rf /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
-# 2. Header
+# 2. Header complet (tous les symboles rencontrés jusqu'ici)
 mkdir -p include/linux
 
 cat > include/linux/susfs_def.h << 'EOF'
@@ -361,14 +361,22 @@ cat > include/linux/susfs_def.h << 'EOF'
 #include <linux/static_key.h>
 #include <linux/jump_label.h>
 #include <linux/string.h>
+#include <linux/fs.h>
 
+/* static keys */
 extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
 
+/* fonctions de base */
 bool susfs_is_current_ksu_domain(void);
 bool susfs_is_current_app_uid(void);
 bool susfs_is_current_proc_umounted(void);
 bool susfs_starts_with(const char *str, const char *prefix);
 
+/* fonctions kstat / inotify */
+bool susfs_is_inode_sus_kstat(struct inode *inode, bool *is_fuse);
+void susfs_sus_kstat_spoof_inotify_fdinfo(unsigned long *ino, dev_t *dev);
+
+/* constantes */
 #ifndef DEFAULT_KSU_MNT_MINOR_DEV
 #define DEFAULT_KSU_MNT_MINOR_DEV  (1 << 20)
 #endif
@@ -382,7 +390,7 @@ EOF
 
 cp include/linux/susfs_def.h include/linux/susfs.h
 
-# 3. Injection Python ultra-fiable dans les fichiers qui plantent
+# 3. Injection Python robuste
 python3 << 'PYEOF'
 import os
 
@@ -394,42 +402,41 @@ def inject_header(filepath, extra_decls=""):
     with open(filepath, 'r') as f:
         content = f.read()
 
-    # Nettoyer les anciennes injections
+    # Nettoyer les anciennes injections susfs
     lines = content.splitlines(True)
     cleaned = []
+    skip = False
     for line in lines:
-        if 'susfs' in line.lower() and ('include' in line or 'extern' in line or 'DEFAULT_KSU' in line):
+        if 'susfs' in line.lower() and ('include' in line or 'extern' in line or 'DEFAULT_KSU' in line or 'susfs_is_' in line or 'susfs_starts' in line or 'susfs_sus_' in line):
             continue
         cleaned.append(line)
     content = ''.join(cleaned)
 
-    header = '''#include <linux/susfs_def.h>
-''' + extra_decls + '\n'
+    header = '#include <linux/susfs_def.h>\n' + extra_decls + '\n'
 
-    # Injecter juste après les premiers includes ou tout en haut
-    if content.startswith('/*') or content.startswith('//') or content.startswith('#'):
-        # Chercher la fin de la zone d'includes
-        insert_pos = 0
-        for i, line in enumerate(content.splitlines(True)):
-            if line.startswith('#include') or line.startswith('/*') or line.startswith('//') or line.strip() == '':
-                insert_pos += len(line)
-            else:
-                break
-        content = content[:insert_pos] + header + content[insert_pos:]
-    else:
-        content = header + content
+    # Injecter après la zone d'includes
+    insert_pos = 0
+    for line in content.splitlines(True):
+        stripped = line.strip()
+        if stripped.startswith('#include') or stripped.startswith('/*') or stripped.startswith('//') or stripped == '' or stripped.startswith('*'):
+            insert_pos += len(line)
+        else:
+            break
+
+    content = content[:insert_pos] + header + content[insert_pos:]
 
     with open(filepath, 'w') as f:
         f.write(content)
     print(f"✅ Injecté dans {filepath}")
 
-# Injection ciblée
 inject_header('fs/notify/fdinfo.c', '''
 #ifndef DEFAULT_KSU_MNT_ID
 #define DEFAULT_KSU_MNT_ID 1000
 #endif
 extern bool susfs_is_current_app_uid(void);
 extern bool susfs_is_current_proc_umounted(void);
+extern bool susfs_is_inode_sus_kstat(struct inode *inode, bool *is_fuse);
+extern void susfs_sus_kstat_spoof_inotify_fdinfo(unsigned long *ino, dev_t *dev);
 ''')
 
 inject_header('kernel/kallsyms.c', '''
@@ -442,13 +449,15 @@ inject_header('fs/namespace.c')
 print("✅ Injections terminées")
 PYEOF
 
-# 4. Stubs dans fs/susfs.c
+# 4. Stubs complets
 if [ -f fs/susfs.c ]; then
   sed -i '/susfs_is_current_ksu_domain/,/^}/d' fs/susfs.c 2>/dev/null || true
   sed -i '/susfs_is_sdcard_android_data_not_decrypted/d' fs/susfs.c 2>/dev/null || true
   sed -i '/susfs_is_current_app_uid/,/^}/d' fs/susfs.c 2>/dev/null || true
   sed -i '/susfs_is_current_proc_umounted/,/^}/d' fs/susfs.c 2>/dev/null || true
   sed -i '/susfs_starts_with/,/^}/d' fs/susfs.c 2>/dev/null || true
+  sed -i '/susfs_is_inode_sus_kstat/,/^}/d' fs/susfs.c 2>/dev/null || true
+  sed -i '/susfs_sus_kstat_spoof_inotify_fdinfo/,/^}/d' fs/susfs.c 2>/dev/null || true
 
   cat >> fs/susfs.c << 'EOF'
 
@@ -481,6 +490,20 @@ bool susfs_starts_with(const char *str, const char *prefix)
 	return strncmp(str, prefix, len) == 0;
 }
 EXPORT_SYMBOL_GPL(susfs_starts_with);
+
+bool susfs_is_inode_sus_kstat(struct inode *inode, bool *is_fuse)
+{
+	if (is_fuse)
+		*is_fuse = false;
+	return false;
+}
+EXPORT_SYMBOL_GPL(susfs_is_inode_sus_kstat);
+
+void susfs_sus_kstat_spoof_inotify_fdinfo(unsigned long *ino, dev_t *dev)
+{
+	/* stub - ne fait rien */
+}
+EXPORT_SYMBOL_GPL(susfs_sus_kstat_spoof_inotify_fdinfo);
 
 EOF
 fi
