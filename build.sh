@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build ReSukiSU + SuSFS v1.5.2 pour kiev (SM8250) ==="
+echo "=== Début du build ReSukiSU + SuSFS (pré-2.3.0) pour kiev (SM8250) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -327,40 +327,43 @@ PYEOF
   python3 /tmp/hook_input.py
 fi
 
-# ==================== 4. INTÉGRATION SuSFS v1.5.2 (stable pour 4.19) ====================
+# ==================== 4. INTÉGRATION SuSFS (pré-2.3.0) ====================
 echo ""
-echo "=== Intégration SuSFS v1.5.2 (stable) ==="
+echo "=== Intégration SuSFS (version avant 2.3.0) ==="
 
 cd "$GITHUB_WORKSPACE"
-rm -rf /tmp/susfs
-git clone --depth=1 --branch kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs
+rm -rf /tmp/cyber_repo
+git clone --depth=50 --branch rebase https://github.com/cyberc3dr/nGKI_Kernel_Build.git /tmp/cyber_repo
+
+cd /tmp/cyber_repo
+# On revient juste avant le commit qui a passé à 2.3.0 (4 sept 2026)
+git checkout $(git log --before="2026-09-04" --pretty=format:"%H" -1) || true
 
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
-# Appliquer le patch principal pour 4.19
-echo "=== Application du patch SuSFS 4.19 ==="
-if [ -f /tmp/susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch ]; then
-  patch -p1 --forward --batch < /tmp/susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch 2>&1 | tee /tmp/susfs_patch.log || true
+SUSFS_PATCH="/tmp/cyber_repo/Patches/Patch/susfs_patch_to_4.19.patch"
+echo "=== Application du patch SuSFS (pré-2.3.0) ==="
+if [ -f "$SUSFS_PATCH" ]; then
+  patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 else
-  echo "⚠️ Patch 4.19 introuvable, tentative avec le fichier générique..."
-  find /tmp/susfs -name "*4.19*.patch" -exec patch -p1 --forward --batch < {} \; 2>&1 | tee /tmp/susfs_patch.log || true
+  echo "⚠️ Patch introuvable"
 fi
 
-# Copier les fichiers sources
-if [ -d /tmp/susfs/kernel_patches/fs ]; then
-  cp -rf /tmp/susfs/kernel_patches/fs/* fs/ 2>/dev/null || true
+# Copie des fichiers
+if [ -d "/tmp/cyber_repo/Patches/fs" ]; then
+  cp -rf /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
-if [ -d /tmp/susfs/kernel_patches/include/linux ]; then
-  cp -rf /tmp/susfs/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
+if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
+  cp -rf /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
-# Ajouter dans le Makefile
-if [ -f fs/Makefile ] && ! grep -q "susfs.o" fs/Makefile; then
+# Makefile
+if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
   echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
 fi
 
-# Ajouter la section Kconfig
-if [ -f drivers/kernelsu/Kconfig ] && ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
+# Kconfig
+if [ -f "drivers/kernelsu/Kconfig" ] && ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
   cat >> drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
 
 menuconfig KSU_SUSFS
@@ -414,10 +417,9 @@ endif
 KCONFIG_EOF
 fi
 
-# Nettoyage des .rej
 find . -name "*.rej" -type f -delete 2>/dev/null || true
 
-echo "✅ SuSFS v1.5.2 intégré"
+echo "✅ SuSFS (pré-2.3.0) intégré"
 
 # ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
