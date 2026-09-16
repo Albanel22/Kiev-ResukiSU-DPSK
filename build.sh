@@ -80,6 +80,41 @@ fi
 
 echo "✅ Intégration kernelsu terminée"
 
+# ==================== 2d. COPIE DU DOSSIER UAPI ====================
+echo ""
+echo "=== Copie du dossier uapi ==="
+
+# Le repo ReSukiSU a un dossier uapi/ à la racine (pas dans kernel/)
+if [ -d "/tmp/resukisu_repo/uapi" ]; then
+    echo "→ Copie de /tmp/resukisu_repo/uapi vers kernel_sources/include/uapi/"
+    mkdir -p "$GITHUB_WORKSPACE/kernel_sources/include/uapi"
+    cp -rn /tmp/resukisu_repo/uapi/* "$GITHUB_WORKSPACE/kernel_sources/include/uapi/" 2>/dev/null || true
+    echo "✅ uapi copié dans include/uapi/"
+    ls include/uapi/ | head -10
+else
+    echo "⚠️ /tmp/resukisu_repo/uapi n'existe pas — recherche alternative"
+    find /tmp/resukisu_repo -name "app_profile.h" -path "*uapi*" 2>/dev/null
+fi
+
+# Créer un lien symbolique pour que <uapi/app_profile.h> soit trouvé
+if [ -d "/tmp/resukisu_repo/uapi" ]; then
+    # Créer le lien dans drivers/kernelsu/uapi
+    mkdir -p "drivers/kernelsu/uapi"
+    cp -rn /tmp/resukisu_repo/uapi/* "drivers/kernelsu/uapi/" 2>/dev/null || true
+    echo "✅ uapi copié dans drivers/kernelsu/uapi/"
+fi
+
+# Ajouter les chemins d'include dans le Kbuild
+if [ -f "drivers/kernelsu/Kbuild" ]; then
+    if ! grep -q "uapi" drivers/kernelsu/Kbuild; then
+        echo "→ Ajout des chemins d'include uapi dans Kbuild"
+        # Ajouter -I avec les chemins uapi
+        sed -i '/^ccflags-y += -I\$(src)/i ccflags-y += -I$(srctree)/include/uapi\nccflags-y += -I$(src)/uapi' drivers/kernelsu/Kbuild
+    fi
+fi
+
+echo "✅ Fix uapi terminé"
+
 # ==================== 2c. CONTOURNEMENT DU CHECK SUBMODULE ====================
 echo ""
 echo "=== Contournement du check git submodule dans Kbuild ==="
