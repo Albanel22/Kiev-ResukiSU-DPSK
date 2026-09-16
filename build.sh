@@ -425,6 +425,25 @@ PYEOF
 
 rm -f fs/super.c.rej 2>/dev/null || true
 
+echo "=== Correction inconditionnelle de l'inclusion susfs_def.h dans fs/stat.c ==="
+python3 - << 'PYEOF'
+with open('fs/stat.c', 'r') as f:
+    content = f.read()
+
+if '#include <linux/susfs_def.h>' not in content:
+    content = content.replace(
+        '#include <linux/uaccess.h>',
+        '#include <linux/uaccess.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif\n',
+        1
+    )
+    print("✅ susfs_def.h injecté dans fs/stat.c")
+else:
+    print("✅ susfs_def.h déjà présent dans fs/stat.c")
+
+with open('fs/stat.c', 'w') as f:
+    f.write(content)
+PYEOF
+
 # Vérification stricte : aucun .rej ne doit persister
 if find . -name "*.rej" -type f | grep -q .; then
     echo "❌ ÉCHEC CRITIQUE : Des rejets de patch SuSFS persistent."
