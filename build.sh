@@ -340,10 +340,9 @@ SUSFS_PATCH="/tmp/cyber_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 echo "=== Application du patch SuSFS ==="
 patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
-# ---------- Corrections des .rej + symboles manquants ----------
 echo "=== Corrections des patchs échoués + symboles manquants ==="
 
-# 1. Copie forcée des headers et sources SuSFS
+# 1. Copie forcée des headers et sources
 if [ -d "/tmp/cyber_repo/Patches/fs" ]; then
   cp -rf /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
@@ -351,64 +350,121 @@ if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
   cp -rf /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
-# 2. Création / correction de include/linux/susfs.h si besoin
+# 2. Header unifié (on crée les deux noms possibles)
 mkdir -p include/linux
-if [ ! -f include/linux/susfs.h ]; then
-  cat > include/linux/susfs.h << 'EOF'
-#ifndef _LINUX_SUSFS_H
-#define _LINUX_SUSFS_H
+
+cat > include/linux/susfs_def.h << 'EOF'
+#ifndef _LINUX_SUSFS_DEF_H
+#define _LINUX_SUSFS_DEF_H
 
 #include <linux/types.h>
 #include <linux/static_key.h>
+#include <linux/jump_label.h>
 
-/* Déclarations minimales pour 4.19 */
-extern struct static_key_false susfs_is_sdcard_android_data_not_decrypted;
+/* Déclarations minimales pour 4.19 / SuSFS 2.x */
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
 bool susfs_is_current_ksu_domain(void);
 
 #ifndef DEFAULT_KSU_MNT_MINOR_DEV
-#define DEFAULT_KSU_MNT_MINOR_DEV  1000
+#define DEFAULT_KSU_MNT_MINOR_DEV  (1 << 20)
 #endif
 
-#endif /* _LINUX_SUSFS_H */
+#endif /* _LINUX_SUSFS_DEF_H */
 EOF
-fi
 
-# 3. Forcer l'include dans fs/super.c
-if ! grep -q "susfs.h" fs/super.c; then
-  sed -i '1i #include <linux/susfs.h>' fs/super.c
-fi
+# Alias pour les anciens includes
+cp include/linux/susfs_def.h include/linux/susfs.h
 
-# 4. Ajouter les définitions manquantes dans fs/susfs.c (si le fichier existe)
+# 3. Forcer l'include en haut de fs/super.c (et namespace.c)
+for f in fs/super.c fs/namespace.c; do
+  if [ -f "$f" ] && ! grep -q "susfs_def.h\|susfs.h" "$f"; then
+    sed -i '1i #include <linux/susfs_def.h>' "$f"
+  fi
+done
+
+# 4. Stubs + définitions (seulement si absents)
 if [ -f fs/susfs.c ]; then
-  # S'assurer que susfs_is_current_ksu_domain existe
-  if ! grep -q "susfs_is_current_ksu_domain" fs/susfs.c; then
-    cat >> fs/susfs.c << 'EOF'
+  # Nettoyage éventuel des anciennes définitions cassées
+  sed -i '/susfs_is_current_ksu_domain/,/^}/d' fs/susfs.c 2>/dev/null || true
+  sed -i '/susfs_is_sdcard_android_data_not_decrypted/d' fs/susfs.c 2>/dev/null || true
+
+  cat >> fs/susfs.c << 'EOF'
+
+/* ===== Stubs minimaux forcés pour compilation ===== */
+DEFINE_STATIC_KEY_TRUE(susfs_is_sdcard_android_data_not_decrypted);
+EXPORT_SYMBOL_GPL(susfs_is_sdcard_android_data_not_decrypted);
 
 bool susfs_is_current_ksu_domain(void)
 {
-	return false; /* stub minimal pour compilation */
+	/* Stub minimal - à remplacer plus tard si besoin */
+	return false;
 }
 EXPORT_SYMBOL_GPL(susfs_is_current_ksu_domain);
 EOF
-  fi
-
-  # Définir le static_key manquant
-  if ! grep -q "susfs_is_sdcard_android_data_not_decrypted" fs/susfs.c; then
-    cat >> fs/susfs.c << 'EOF'
-
-DEFINE_STATIC_KEY_FALSE(susfs_is_sdcard_android_data_not_decrypted);
-EXPORT_SYMBOL_GPL(susfs_is_sdcard_android_data_not_decrypted);
-EOF
-  fi
 fi
 
 # 5. Nettoyage des .rej
-rm -f fs/super.c.rej fs/namespace.c.rej fs/proc/task_mmu.c.rej 2>/dev/null || true
+find . -name "*.rej" -type f -delete 2>/dev/null || true
 
 # 6. Ajout dans Makefile
 if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
   echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
   [ -f "fs/sus_su.c" ] && echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
+fi
+
+# 7. Ajout de la section Kconfig (important)
+if [ -f "drivers/kernelsu/Kconfig" ] && ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
+  cat >> drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
+
+menuconfig KSU_SUSFS
+	bool "KernelSU SUSFS support"
+	depends on KSU
+	default y
+if KSU_SUSFS
+config KSU_SUSFS_SUS_PATH
+	bool "sus_path"
+	default y
+config KSU_SUSFS_SUS_MOUNT
+	bool "sus_mount"
+	default y
+config KSU_SUSFS_SUS_KSTAT
+	bool "sus_kstat"
+	default y
+config KSU_SUSFS_SUS_MAP
+	bool "sus_map"
+	default n
+config KSU_SUSFS_SPOOF_UNAME
+	bool "spoof_uname"
+	default y
+config KSU_SUSFS_ENABLE_LOG
+	bool "enable_log"
+	default n
+config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+	bool "hide_ksu_susfs_symbols"
+	default y
+config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+	bool "spoof_cmdline_or_bootconfig"
+	default y
+config KSU_SUSFS_OPEN_REDIRECT
+	bool "open_redirect"
+	default y
+config KSU_SUSFS_TRY_UMOUNT
+	bool "try_umount"
+	default y
+config KSU_SUSFS_HAS_MAGIC_MOUNT
+	bool "has_magic_mount"
+	default y
+config KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
+	bool "auto_add_ksu_default_mount"
+	default y
+config KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
+	bool "auto_add_sus_bind_mount"
+	default y
+config KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
+	bool "auto_add_try_umount_for_bind_mount"
+	default y
+endif
+KCONFIG_EOF
 fi
 
 echo "✅ SuSFS source + corrections appliquées"
