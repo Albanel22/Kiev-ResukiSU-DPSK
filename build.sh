@@ -342,7 +342,7 @@ patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || 
 
 echo "=== Corrections des patchs échoués + symboles manquants ==="
 
-# 1. Copie forcée des headers et sources
+# 1. Copie forcée
 if [ -d "/tmp/cyber_repo/Patches/fs" ]; then
   cp -rf /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
@@ -350,7 +350,7 @@ if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
   cp -rf /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
-# 2. Header unifié (on crée les deux noms possibles)
+# 2. Header
 mkdir -p include/linux
 
 cat > include/linux/susfs_def.h << 'EOF'
@@ -360,59 +360,141 @@ cat > include/linux/susfs_def.h << 'EOF'
 #include <linux/types.h>
 #include <linux/static_key.h>
 #include <linux/jump_label.h>
+#include <linux/string.h>
 
-/* Déclarations minimales pour 4.19 / SuSFS 2.x */
 extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+
 bool susfs_is_current_ksu_domain(void);
+bool susfs_is_current_app_uid(void);
+bool susfs_is_current_proc_umounted(void);
+bool susfs_starts_with(const char *str, const char *prefix);
 
 #ifndef DEFAULT_KSU_MNT_MINOR_DEV
 #define DEFAULT_KSU_MNT_MINOR_DEV  (1 << 20)
 #endif
 
+#ifndef DEFAULT_KSU_MNT_ID
+#define DEFAULT_KSU_MNT_ID         1000
+#endif
+
 #endif /* _LINUX_SUSFS_DEF_H */
 EOF
 
-# Alias pour les anciens includes
 cp include/linux/susfs_def.h include/linux/susfs.h
 
-# 3. Forcer l'include en haut de fs/super.c (et namespace.c)
-for f in fs/super.c fs/namespace.c; do
-  if [ -f "$f" ] && ! grep -q "susfs_def.h\|susfs.h" "$f"; then
-    sed -i '1i #include <linux/susfs_def.h>' "$f"
-  fi
-done
+# 3. Injection Python ultra-fiable dans les fichiers qui plantent
+python3 << 'PYEOF'
+import os
 
-# 4. Stubs + définitions (seulement si absents)
+def inject_header(filepath, extra_decls=""):
+    if not os.path.exists(filepath):
+        print(f"⚠️  Fichier introuvable : {filepath}")
+        return
+
+    with open(filepath, 'r') as f:
+        content = f.read()
+
+    # Nettoyer les anciennes injections
+    lines = content.splitlines(True)
+    cleaned = []
+    for line in lines:
+        if 'susfs' in line.lower() and ('include' in line or 'extern' in line or 'DEFAULT_KSU' in line):
+            continue
+        cleaned.append(line)
+    content = ''.join(cleaned)
+
+    header = '''#include <linux/susfs_def.h>
+''' + extra_decls + '\n'
+
+    # Injecter juste après les premiers includes ou tout en haut
+    if content.startswith('/*') or content.startswith('//') or content.startswith('#'):
+        # Chercher la fin de la zone d'includes
+        insert_pos = 0
+        for i, line in enumerate(content.splitlines(True)):
+            if line.startswith('#include') or line.startswith('/*') or line.startswith('//') or line.strip() == '':
+                insert_pos += len(line)
+            else:
+                break
+        content = content[:insert_pos] + header + content[insert_pos:]
+    else:
+        content = header + content
+
+    with open(filepath, 'w') as f:
+        f.write(content)
+    print(f"✅ Injecté dans {filepath}")
+
+# Injection ciblée
+inject_header('fs/notify/fdinfo.c', '''
+#ifndef DEFAULT_KSU_MNT_ID
+#define DEFAULT_KSU_MNT_ID 1000
+#endif
+extern bool susfs_is_current_app_uid(void);
+extern bool susfs_is_current_proc_umounted(void);
+''')
+
+inject_header('kernel/kallsyms.c', '''
+extern bool susfs_starts_with(const char *str, const char *prefix);
+''')
+
+inject_header('fs/super.c')
+inject_header('fs/namespace.c')
+
+print("✅ Injections terminées")
+PYEOF
+
+# 4. Stubs dans fs/susfs.c
 if [ -f fs/susfs.c ]; then
-  # Nettoyage éventuel des anciennes définitions cassées
   sed -i '/susfs_is_current_ksu_domain/,/^}/d' fs/susfs.c 2>/dev/null || true
   sed -i '/susfs_is_sdcard_android_data_not_decrypted/d' fs/susfs.c 2>/dev/null || true
+  sed -i '/susfs_is_current_app_uid/,/^}/d' fs/susfs.c 2>/dev/null || true
+  sed -i '/susfs_is_current_proc_umounted/,/^}/d' fs/susfs.c 2>/dev/null || true
+  sed -i '/susfs_starts_with/,/^}/d' fs/susfs.c 2>/dev/null || true
 
   cat >> fs/susfs.c << 'EOF'
 
-/* ===== Stubs minimaux forcés pour compilation ===== */
+/* ===== Stubs minimaux forcés ===== */
+
 DEFINE_STATIC_KEY_TRUE(susfs_is_sdcard_android_data_not_decrypted);
 EXPORT_SYMBOL_GPL(susfs_is_sdcard_android_data_not_decrypted);
 
 bool susfs_is_current_ksu_domain(void)
 {
-	/* Stub minimal - à remplacer plus tard si besoin */
 	return false;
 }
 EXPORT_SYMBOL_GPL(susfs_is_current_ksu_domain);
+
+bool susfs_is_current_app_uid(void)
+{
+	return false;
+}
+EXPORT_SYMBOL_GPL(susfs_is_current_app_uid);
+
+bool susfs_is_current_proc_umounted(void)
+{
+	return false;
+}
+EXPORT_SYMBOL_GPL(susfs_is_current_proc_umounted);
+
+bool susfs_starts_with(const char *str, const char *prefix)
+{
+	size_t len = strlen(prefix);
+	return strncmp(str, prefix, len) == 0;
+}
+EXPORT_SYMBOL_GPL(susfs_starts_with);
+
 EOF
 fi
 
-# 5. Nettoyage des .rej
+# 5. Nettoyage
 find . -name "*.rej" -type f -delete 2>/dev/null || true
 
-# 6. Ajout dans Makefile
+# 6. Makefile
 if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
   echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
   [ -f "fs/sus_su.c" ] && echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
 fi
 
-# 7. Ajout de la section Kconfig (important)
+# 7. Kconfig
 if [ -f "drivers/kernelsu/Kconfig" ] && ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
   cat >> drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
 
