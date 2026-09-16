@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build ReSukiSU + SuSFS pour kiev (SM8250) ==="
+echo "=== Début du build ReSukiSU + SuSFS v1.5.2 pour kiev (SM8250) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -327,198 +327,40 @@ PYEOF
   python3 /tmp/hook_input.py
 fi
 
-# ==================== 4. INTÉGRATION SuSFS (cyberc3dr) ====================
+# ==================== 4. INTÉGRATION SuSFS v1.5.2 (stable pour 4.19) ====================
 echo ""
-echo "=== Intégration SuSFS depuis cyberc3dr ==="
+echo "=== Intégration SuSFS v1.5.2 (stable) ==="
+
 cd "$GITHUB_WORKSPACE"
-rm -rf /tmp/cyber_repo
-git clone --depth=1 --branch rebase https://github.com/cyberc3dr/nGKI_Kernel_Build.git /tmp/cyber_repo
+rm -rf /tmp/susfs
+git clone --depth=1 --branch kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs
 
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
-SUSFS_PATCH="/tmp/cyber_repo/Patches/Patch/susfs_patch_to_4.19.patch"
-echo "=== Application du patch SuSFS ==="
-patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
-
-echo "=== Corrections des patchs échoués + symboles manquants ==="
-
-# 1. Copie forcée
-if [ -d "/tmp/cyber_repo/Patches/fs" ]; then
-  cp -rf /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
-fi
-if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
-  cp -rf /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
+# Appliquer le patch principal pour 4.19
+echo "=== Application du patch SuSFS 4.19 ==="
+if [ -f /tmp/susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch ]; then
+  patch -p1 --forward --batch < /tmp/susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch 2>&1 | tee /tmp/susfs_patch.log || true
+else
+  echo "⚠️ Patch 4.19 introuvable, tentative avec le fichier générique..."
+  find /tmp/susfs -name "*4.19*.patch" -exec patch -p1 --forward --batch < {} \; 2>&1 | tee /tmp/susfs_patch.log || true
 fi
 
-# 2. Header complet (tous les symboles rencontrés jusqu'ici)
-mkdir -p include/linux
-
-cat > include/linux/susfs_def.h << 'EOF'
-#ifndef _LINUX_SUSFS_DEF_H
-#define _LINUX_SUSFS_DEF_H
-
-#include <linux/types.h>
-#include <linux/static_key.h>
-#include <linux/jump_label.h>
-#include <linux/string.h>
-#include <linux/fs.h>
-
-/* static keys */
-extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
-
-/* fonctions de base */
-bool susfs_is_current_ksu_domain(void);
-bool susfs_is_current_app_uid(void);
-bool susfs_is_current_proc_umounted(void);
-bool susfs_starts_with(const char *str, const char *prefix);
-
-/* fonctions kstat / inotify */
-bool susfs_is_inode_sus_kstat(struct inode *inode, bool *is_fuse);
-void susfs_sus_kstat_spoof_inotify_fdinfo(unsigned long *ino, dev_t *dev);
-
-/* constantes */
-#ifndef DEFAULT_KSU_MNT_MINOR_DEV
-#define DEFAULT_KSU_MNT_MINOR_DEV  (1 << 20)
-#endif
-
-#ifndef DEFAULT_KSU_MNT_ID
-#define DEFAULT_KSU_MNT_ID         1000
-#endif
-
-#endif /* _LINUX_SUSFS_DEF_H */
-EOF
-
-cp include/linux/susfs_def.h include/linux/susfs.h
-
-# 3. Injection Python robuste
-python3 << 'PYEOF'
-import os
-
-def inject_header(filepath, extra_decls=""):
-    if not os.path.exists(filepath):
-        print(f"⚠️  Fichier introuvable : {filepath}")
-        return
-
-    with open(filepath, 'r') as f:
-        content = f.read()
-
-    # Nettoyer les anciennes injections susfs
-    lines = content.splitlines(True)
-    cleaned = []
-    skip = False
-    for line in lines:
-        if 'susfs' in line.lower() and ('include' in line or 'extern' in line or 'DEFAULT_KSU' in line or 'susfs_is_' in line or 'susfs_starts' in line or 'susfs_sus_' in line):
-            continue
-        cleaned.append(line)
-    content = ''.join(cleaned)
-
-    header = '#include <linux/susfs_def.h>\n' + extra_decls + '\n'
-
-    # Injecter après la zone d'includes
-    insert_pos = 0
-    for line in content.splitlines(True):
-        stripped = line.strip()
-        if stripped.startswith('#include') or stripped.startswith('/*') or stripped.startswith('//') or stripped == '' or stripped.startswith('*'):
-            insert_pos += len(line)
-        else:
-            break
-
-    content = content[:insert_pos] + header + content[insert_pos:]
-
-    with open(filepath, 'w') as f:
-        f.write(content)
-    print(f"✅ Injecté dans {filepath}")
-
-inject_header('fs/notify/fdinfo.c', '''
-#ifndef DEFAULT_KSU_MNT_ID
-#define DEFAULT_KSU_MNT_ID 1000
-#endif
-extern bool susfs_is_current_app_uid(void);
-extern bool susfs_is_current_proc_umounted(void);
-extern bool susfs_is_inode_sus_kstat(struct inode *inode, bool *is_fuse);
-extern void susfs_sus_kstat_spoof_inotify_fdinfo(unsigned long *ino, dev_t *dev);
-''')
-
-inject_header('kernel/kallsyms.c', '''
-extern bool susfs_starts_with(const char *str, const char *prefix);
-''')
-
-inject_header('fs/super.c')
-inject_header('fs/namespace.c')
-
-print("✅ Injections terminées")
-PYEOF
-
-# 4. Stubs complets
-if [ -f fs/susfs.c ]; then
-  sed -i '/susfs_is_current_ksu_domain/,/^}/d' fs/susfs.c 2>/dev/null || true
-  sed -i '/susfs_is_sdcard_android_data_not_decrypted/d' fs/susfs.c 2>/dev/null || true
-  sed -i '/susfs_is_current_app_uid/,/^}/d' fs/susfs.c 2>/dev/null || true
-  sed -i '/susfs_is_current_proc_umounted/,/^}/d' fs/susfs.c 2>/dev/null || true
-  sed -i '/susfs_starts_with/,/^}/d' fs/susfs.c 2>/dev/null || true
-  sed -i '/susfs_is_inode_sus_kstat/,/^}/d' fs/susfs.c 2>/dev/null || true
-  sed -i '/susfs_sus_kstat_spoof_inotify_fdinfo/,/^}/d' fs/susfs.c 2>/dev/null || true
-
-  cat >> fs/susfs.c << 'EOF'
-
-/* ===== Stubs minimaux forcés ===== */
-
-DEFINE_STATIC_KEY_TRUE(susfs_is_sdcard_android_data_not_decrypted);
-EXPORT_SYMBOL_GPL(susfs_is_sdcard_android_data_not_decrypted);
-
-bool susfs_is_current_ksu_domain(void)
-{
-	return false;
-}
-EXPORT_SYMBOL_GPL(susfs_is_current_ksu_domain);
-
-bool susfs_is_current_app_uid(void)
-{
-	return false;
-}
-EXPORT_SYMBOL_GPL(susfs_is_current_app_uid);
-
-bool susfs_is_current_proc_umounted(void)
-{
-	return false;
-}
-EXPORT_SYMBOL_GPL(susfs_is_current_proc_umounted);
-
-bool susfs_starts_with(const char *str, const char *prefix)
-{
-	size_t len = strlen(prefix);
-	return strncmp(str, prefix, len) == 0;
-}
-EXPORT_SYMBOL_GPL(susfs_starts_with);
-
-bool susfs_is_inode_sus_kstat(struct inode *inode, bool *is_fuse)
-{
-	if (is_fuse)
-		*is_fuse = false;
-	return false;
-}
-EXPORT_SYMBOL_GPL(susfs_is_inode_sus_kstat);
-
-void susfs_sus_kstat_spoof_inotify_fdinfo(unsigned long *ino, dev_t *dev)
-{
-	/* stub - ne fait rien */
-}
-EXPORT_SYMBOL_GPL(susfs_sus_kstat_spoof_inotify_fdinfo);
-
-EOF
+# Copier les fichiers sources
+if [ -d /tmp/susfs/kernel_patches/fs ]; then
+  cp -rf /tmp/susfs/kernel_patches/fs/* fs/ 2>/dev/null || true
+fi
+if [ -d /tmp/susfs/kernel_patches/include/linux ]; then
+  cp -rf /tmp/susfs/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
-# 5. Nettoyage
-find . -name "*.rej" -type f -delete 2>/dev/null || true
-
-# 6. Makefile
-if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
+# Ajouter dans le Makefile
+if [ -f fs/Makefile ] && ! grep -q "susfs.o" fs/Makefile; then
   echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
-  [ -f "fs/sus_su.c" ] && echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
 fi
 
-# 7. Kconfig
-if [ -f "drivers/kernelsu/Kconfig" ] && ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
+# Ajouter la section Kconfig
+if [ -f drivers/kernelsu/Kconfig ] && ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
   cat >> drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
 
 menuconfig KSU_SUSFS
@@ -572,7 +414,10 @@ endif
 KCONFIG_EOF
 fi
 
-echo "✅ SuSFS source + corrections appliquées"
+# Nettoyage des .rej
+find . -name "*.rej" -type f -delete 2>/dev/null || true
+
+echo "✅ SuSFS v1.5.2 intégré"
 
 # ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
