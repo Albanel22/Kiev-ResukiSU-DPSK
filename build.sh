@@ -581,6 +581,82 @@ fi
 
 echo "✅ Fix SuSFS terminé"
 
+# ==================== 4c. FIX DES DÉFINITIONS SUSFS POUR fs/namespace.c ====================
+echo ""
+echo "=== Fix des définitions SuSFS manquantes pour namespace.c ==="
+
+# --- 1. Ajouter les macros et déclarations dans include/linux/susfs_def.h ---
+if [ -f "include/linux/susfs_def.h" ]; then
+    # Macros de mount
+    if ! grep -q "DEFAULT_KSU_MNT_GROUP_ID" include/linux/susfs_def.h; then
+        echo "→ Ajout de DEFAULT_KSU_MNT_GROUP_ID / DEFAULT_KSU_MNT_ID / VFSMOUNT_* dans susfs_def.h"
+        cat >> include/linux/susfs_def.h << 'SUSFS_DEF_MOUNT_EOF'
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#define DEFAULT_KSU_MNT_ID       ((1 << 20) + 1)
+#define DEFAULT_KSU_MNT_GROUP_ID ((1 << 20) + 1)
+#define VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT (1 << 25)
+#define CL_COPY_MNT_NS BIT(25)
+#endif
+SUSFS_DEF_MOUNT_EOF
+    fi
+else
+    echo "❌ include/linux/susfs_def.h n'existe pas"
+fi
+
+# --- 2. Ajouter les déclarations dans include/linux/susfs.h ---
+if [ -f "include/linux/susfs.h" ]; then
+    if ! grep -q "susfs_is_current_ksu_domain" include/linux/susfs.h; then
+        echo "→ Ajout de susfs_is_current_ksu_domain dans susfs.h"
+        cat >> include/linux/susfs.h << 'SUSFS_H_DOMAIN_EOF'
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+bool susfs_is_current_ksu_domain(void);
+bool susfs_is_current_proc_umounted_for_zygote_next(void);
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+#endif
+SUSFS_H_DOMAIN_EOF
+    fi
+fi
+
+# --- 3. Ajouter les implémentations dans fs/susfs.c ---
+if [ -f "fs/susfs.c" ]; then
+    if ! grep -q "susfs_is_current_proc_umounted_for_zygote_next" fs/susfs.c; then
+        echo "→ Ajout de susfs_is_current_proc_umounted_for_zygote_next dans susfs.c"
+        cat >> fs/susfs.c << 'SUSFS_C_ZYGOTE_EOF'
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+bool susfs_is_current_proc_umounted_for_zygote_next(void)
+{
+    return false;
+}
+EXPORT_SYMBOL(susfs_is_current_proc_umounted_for_zygote_next);
+
+DEFINE_STATIC_KEY_TRUE(susfs_is_sdcard_android_data_not_decrypted);
+EXPORT_SYMBOL(susfs_is_sdcard_android_data_not_decrypted);
+#endif
+SUSFS_C_ZYGOTE_EOF
+    fi
+fi
+
+# --- 4. S'assurer que namespace.c inclut bien susfs_def.h et susfs.h ---
+if [ -f "fs/namespace.c" ]; then
+    if ! grep -q "susfs_def.h" fs/namespace.c; then
+        echo "→ Ajout de #include <linux/susfs_def.h> dans fs/namespace.c"
+        sed -i '1i #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif' fs/namespace.c
+    else
+        echo "✅ susfs_def.h déjà inclus dans namespace.c"
+    fi
+    if ! grep -q "susfs.h" fs/namespace.c; then
+        echo "→ Ajout de #include <linux/susfs.h> dans fs/namespace.c"
+        sed -i '1i #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs.h>\n#endif' fs/namespace.c
+    else
+        echo "✅ susfs.h déjà inclus dans namespace.c"
+    fi
+fi
+
+echo "✅ Fix SuSFS pour namespace.c terminé"
+
 # ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
 export ARCH=arm64
