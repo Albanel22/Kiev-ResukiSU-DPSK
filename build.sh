@@ -474,6 +474,56 @@ find . -name "*.rej" -type f -delete 2>/dev/null || true
 
 echo "✅ SuSFS intégré proprement"
 
+# ==================== Correction déclarations SuSFS (super.c) ====================
+echo "=== Correction des déclarations manquantes dans fs/super.c ==="
+
+mkdir -p include/linux
+
+# Créer / compléter le header
+cat > include/linux/susfs_def.h << 'EOF'
+#ifndef _LINUX_SUSFS_DEF_H
+#define _LINUX_SUSFS_DEF_H
+
+#include <linux/types.h>
+#include <linux/static_key.h>
+#include <linux/jump_label.h>
+
+#ifndef DEFAULT_KSU_MNT_MINOR_DEV
+#define DEFAULT_KSU_MNT_MINOR_DEV  (1 << 20)
+#endif
+
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+bool susfs_is_current_ksu_domain(void);
+
+#endif /* _LINUX_SUSFS_DEF_H */
+EOF
+
+# Forcer l'include en haut de fs/super.c
+if [ -f fs/super.c ]; then
+  if ! grep -q "susfs_def.h" fs/super.c; then
+    sed -i '1i #include <linux/susfs_def.h>' fs/super.c
+  fi
+fi
+
+# Stubs minimaux (seulement si le fichier susfs.c existe)
+if [ -f fs/susfs.c ]; then
+  if ! grep -q "susfs_is_sdcard_android_data_not_decrypted" fs/susfs.c; then
+    cat >> fs/susfs.c << 'EOF'
+
+DEFINE_STATIC_KEY_TRUE(susfs_is_sdcard_android_data_not_decrypted);
+EXPORT_SYMBOL_GPL(susfs_is_sdcard_android_data_not_decrypted);
+
+bool susfs_is_current_ksu_domain(void)
+{
+	return false;
+}
+EXPORT_SYMBOL_GPL(susfs_is_current_ksu_domain);
+EOF
+  fi
+fi
+
+echo "✅ Déclarations SuSFS corrigées"
+
 # ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
 export ARCH=arm64
