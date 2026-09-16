@@ -403,7 +403,7 @@ import re
 with open('fs/super.c', 'r') as f:
     content = f.read()
 
-if 'susfs_is_current_ksu_domain' not in content:
+if 'extern bool susfs_is_current_ksu_domain' not in content:
     decl = """
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 #include <linux/susfs_def.h>
