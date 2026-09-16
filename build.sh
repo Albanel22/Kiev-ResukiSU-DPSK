@@ -657,6 +657,71 @@ fi
 
 echo "✅ Fix SuSFS pour namespace.c terminé"
 
+# ==================== 4d. FIX CL_COPY_MNT_NS DANS fs/namespace.c ====================
+echo ""
+echo "=== Fix CL_COPY_MNT_NS dans fs/namespace.c ==="
+
+if [ -f "fs/namespace.c" ]; then
+    # Vérifier si CL_COPY_MNT_NS est défini quelque part
+    if ! grep -q "#define CL_COPY_MNT_NS" fs/namespace.c; then
+        echo "→ Ajout de #define CL_COPY_MNT_NS dans fs/namespace.c"
+        # Insérer après les includes, avant le premier usage
+        python3 - << 'PYEOF'
+import re
+with open('fs/namespace.c', 'r') as f:
+    content = f.read()
+
+# Insérer la définition après les includes et avant le premier usage
+if '#define CL_COPY_MNT_NS' not in content:
+    # Trouver le premier #include
+    pattern = r'(#include\s+<linux/[^>]+>\s*\n)'
+    matches = list(re.finditer(pattern, content))
+    if matches:
+        # Prendre le dernier include consécutif au début
+        last_include = matches[-1]
+        insert_pos = last_include.end()
+        
+        definition = '''
+/* --- SuSFS: CL_COPY_MNT_NS (Copy Mount Namespace flag) --- */
+#ifndef CL_COPY_MNT_NS
+#define CL_COPY_MNT_NS 0x00000001
+#endif
+/* --- Fin SuSFS CL_COPY_MNT_NS --- */
+
+'''
+        content = content[:insert_pos] + definition + content[insert_pos:]
+        
+        with open('fs/namespace.c', 'w') as f:
+            f.write(content)
+        print("✅ CL_COPY_MNT_NS ajouté dans fs/namespace.c")
+    else:
+        print("⚠️ Aucun #include trouvé, ajout en début de fichier")
+        content = '#ifndef CL_COPY_MNT_NS\n#define CL_COPY_MNT_NS 0x00000001\n#endif\n\n' + content
+        with open('fs/namespace.c', 'w') as f:
+            f.write(content)
+PYEOF
+    else
+        echo "✅ CL_COPY_MNT_NS déjà défini dans fs/namespace.c"
+    fi
+
+    # Vérifier aussi dans susfs_def.h
+    if [ -f "include/linux/susfs_def.h" ]; then
+        if ! grep -q "CL_COPY_MNT_NS" include/linux/susfs_def.h; then
+            echo "→ Ajout de CL_COPY_MNT_NS dans include/linux/susfs_def.h"
+            cat >> include/linux/susfs_def.h << 'SUSFS_DEF_CL_EOF'
+
+#ifndef CL_COPY_MNT_NS
+#define CL_COPY_MNT_NS 0x00000001
+#endif
+SUSFS_DEF_CL_EOF
+        else
+            echo "✅ CL_COPY_MNT_NS déjà dans susfs_def.h"
+        fi
+    fi
+fi
+
+echo "✅ Fix CL_COPY_MNT_NS terminé"
+
 # ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
 export ARCH=arm64
