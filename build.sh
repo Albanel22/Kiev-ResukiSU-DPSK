@@ -557,8 +557,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "# CONFIG_COMPAT_VDSO is not set"
   echo "# CONFIG_VDSO32 is not set"
   echo ""
-  echo "# --- Fix seccomp : désactivé sur les montages précédents (dont backslashxx fonctionnel) ---"
-  echo "# CONFIG_SECCOMP is not set"
+  echo "# --- Fix seccomp : CONFIG_SECCOMP doit rester ON (struct seccomp.mode/.filter requis par drivers/kernelsu/policy/app_profile.c),"
+  echo "# --- seul CONFIG_SECCOMP_FILTER (filtrage BPF utilisé par Android pour bloquer le syscall du driver KSU) est désactivé ---"
+  echo "CONFIG_SECCOMP=y"
   echo "# CONFIG_SECCOMP_FILTER is not set"
   echo ""
   echo "CONFIG_KSU_SUSFS=y"
@@ -581,13 +582,19 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
 # --- Vérification stricte : seccomp doit être bien désactivé après olddefconfig ---
-if grep -q "^CONFIG_SECCOMP=y" out/.config; then
-  echo "❌ CONFIG_SECCOMP est resté activé après olddefconfig (probablement forcé par le defconfig fusionné) — forçage direct avec scripts/config"
-  ./scripts/config --file out/.config --disable CONFIG_SECCOMP
+if ! grep -q "^CONFIG_SECCOMP=y" out/.config; then
+  echo "❌ CONFIG_SECCOMP n'est pas activé après olddefconfig (le driver KSU ne compilera pas sans) — forçage direct avec scripts/config"
+  ./scripts/config --file out/.config --enable CONFIG_SECCOMP
   ./scripts/config --file out/.config --disable CONFIG_SECCOMP_FILTER
   make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 fi
-grep -E "^CONFIG_SECCOMP" out/.config || echo "✅ CONFIG_SECCOMP absent de .config (désactivé)"
+if grep -q "^CONFIG_SECCOMP_FILTER=y" out/.config; then
+  echo "❌ CONFIG_SECCOMP_FILTER est resté activé après olddefconfig (probablement forcé par le defconfig fusionné) — forçage direct avec scripts/config"
+  ./scripts/config --file out/.config --disable CONFIG_SECCOMP_FILTER
+  make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+fi
+grep -E "^CONFIG_SECCOMP" out/.config
+echo "✅ attendu : CONFIG_SECCOMP=y et CONFIG_SECCOMP_FILTER absent/non défini"
 
 # ==================== 6. PATCHES FINAUX ====================
 echo "=== Patch signatures modules + tactile ==="
