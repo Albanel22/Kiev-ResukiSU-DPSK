@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Build ReSukiSU (main) + SuSFS + patch seccomp 4.19 ==="
+echo "=== Build ReSukiSU (main) + SuSFS + KALLSYMS_ALL ==="
 df -h
 
 # ==================== 0. ENVIRONNEMENT ====================
@@ -28,25 +28,16 @@ echo "=== Intégration ReSukiSU via setup.sh ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-# Vérification de base
 if [ ! -d "drivers/kernelsu" ]; then
     echo "❌ drivers/kernelsu absent"
     exit 1
 fi
 echo "✅ drivers/kernelsu présent"
 
-# ==================== 2e-bis. PATCH SECCOMP POUR KERNEL 4.19 (LE SEUL AJOUT) ====================
+# ==================== 2e-bis. PATCH SECCOMP POUR KERNEL 4.19 ====================
 echo ""
 echo "=== Patch seccomp pour kernel 4.19 ==="
 
-# Diagnostic
-echo "→ Recherche du check 5.10 :"
-grep -rn "LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)" drivers/kernelsu/ 2>/dev/null | head -20 || echo "(aucun)"
-
-echo "→ Recherche seccomp :"
-grep -rn "ksu_seccomp_allow_cache\|disable_seccomp" drivers/kernelsu/ 2>/dev/null | head -10 || echo "(aucun)"
-
-# Patcher tous les fichiers avec le check 5.10
 PATCHED=0
 for FILE in $(grep -rl "LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)" drivers/kernelsu/ 2>/dev/null); do
     sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)/#if 1 \/* Patched 4.19 *\//g' "$FILE"
@@ -54,7 +45,6 @@ for FILE in $(grep -rl "LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)" drivers/
     PATCHED=$((PATCHED + 1))
 done
 
-# Aussi pour < 5.10.0
 for FILE in $(grep -rl "LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)" drivers/kernelsu/ 2>/dev/null); do
     sed -i 's/#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)/#if 0 \/* Patched 4.19 *\//g' "$FILE"
     echo "  ✅ Patché (< 5.10) : $FILE"
@@ -617,6 +607,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y"
   echo "# CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK is not set"
   echo "# CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK is not set"
+  echo "CONFIG_KALLSYMS=y"
+  echo "CONFIG_KALLSYMS_ALL=y"
+  echo "CONFIG_KALLSYMS_ABSOLUTE_PERCPU=y"
   echo "CONFIG_KPROBES=y"
   echo "CONFIG_HAVE_KPROBES=y"
   echo "CONFIG_KRETPROBES=y"
