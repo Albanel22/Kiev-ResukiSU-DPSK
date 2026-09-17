@@ -557,6 +557,10 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "# CONFIG_COMPAT_VDSO is not set"
   echo "# CONFIG_VDSO32 is not set"
   echo ""
+  echo "# --- Fix seccomp : désactivé sur les montages précédents (dont backslashxx fonctionnel) ---"
+  echo "# CONFIG_SECCOMP is not set"
+  echo "# CONFIG_SECCOMP_FILTER is not set"
+  echo ""
   echo "CONFIG_KSU_SUSFS=y"
   echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
   echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
@@ -576,11 +580,20 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
+# --- Vérification stricte : seccomp doit être bien désactivé après olddefconfig ---
+if grep -q "^CONFIG_SECCOMP=y" out/.config; then
+  echo "❌ CONFIG_SECCOMP est resté activé après olddefconfig (probablement forcé par le defconfig fusionné) — forçage direct avec scripts/config"
+  ./scripts/config --file out/.config --disable CONFIG_SECCOMP
+  ./scripts/config --file out/.config --disable CONFIG_SECCOMP_FILTER
+  make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+fi
+grep -E "^CONFIG_SECCOMP" out/.config || echo "✅ CONFIG_SECCOMP absent de .config (désactivé)"
+
 # ==================== 6. PATCHES FINAUX ====================
 echo "=== Patch signatures modules + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
 # ==================== 7. COMPILATION ====================
 echo "=== Compilation finale ==="
@@ -595,7 +608,68 @@ else
   exit 1
 fi
 
-# ==================== 8. REPACK (sans ksud) ====================
+# ==================== 7b. COMPILATION KSUD (ReSukiSU) ====================
+echo "=== Compilation de ksud (ReSukiSU) ==="
+cd "$GITHUB_WORKSPACE"
+
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+
+rustup toolchain install nightly
+rustup default nightly
+rustup target add aarch64-linux-android
+
+wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+unzip -q android-ndk-r26d-linux.zip
+
+export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
+export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
+export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
+export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
+
+rm -rf "$GITHUB_WORKSPACE/ksud-src"
+git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
+cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
+
+mkdir -p .cargo
+cat > .cargo/config.toml <<EOF
+[target.aarch64-linux-android]
+linker = "$AARCH64_CLANG_PATH"
+
+[env]
+CC_aarch64_linux_android = "$AARCH64_CLANG_PATH"
+CXX_aarch64_linux_android = "$AARCH64_CLANGXX_PATH"
+AR_aarch64_linux_android = "$AR_PATH"
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
+EOF
+
+echo "=== Suppression du Cargo.lock pour re-resoudre les dependances (revision figee introuvable) ==="
+rm -f Cargo.lock
+
+export CARGO_NET_GIT_FETCH_WITH_CLI=true
+cargo +nightly build --release --target aarch64-linux-android
+
+echo "=== Recherche du binaire ksud dans tout le repo cloné ==="
+find "$GITHUB_WORKSPACE/ksud-src" -type f -name "ksud" 2>/dev/null
+KSUD_BINARY=$(find "$GITHUB_WORKSPACE/ksud-src" -type f -name "ksud" -executable 2>/dev/null | head -1)
+
+if [ -z "$KSUD_BINARY" ]; then
+    echo "❌ ksud introuvable après recherche automatique"
+    echo "=== Contenu de la racine du repo ksud-src (diagnostic) ==="
+    ls -la "$GITHUB_WORKSPACE/ksud-src/"
+    exit 1
+fi
+
+echo "✅ ksud trouvé ici : $KSUD_BINARY"
+cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
+chmod 755 "$GITHUB_WORKSPACE/ksud"
+echo "✅ ksud (ReSukiSU) compilé"
+
+cd "$GITHUB_WORKSPACE"
+
+# ==================== 8. REPACK (avec ksud) ====================
 echo "=== Téléchargement des images stock ==="
 cd $GITHUB_WORKSPACE
 
@@ -621,6 +695,49 @@ if [ -f "boot-stock.img" ]; then
   cd repack
   ./magiskboot unpack boot.img
   cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
+
+  # --- Chemin canonique attendu par ksud lui-même : /data/adb/ksu/bin/ksud ---
+  echo "=== Installation de ksud dans le ramdisk (chemin canonique /data/adb/ksu/bin/ksud) ==="
+  ./magiskboot cpio ramdisk.cpio \
+    "mkdir 0755 data" \
+    "mkdir 0755 data/adb" \
+    "mkdir 0755 data/adb/ksu" \
+    "mkdir 0755 data/adb/ksu/bin" \
+    "add 0755 data/adb/ksu/bin/ksud $GITHUB_WORKSPACE/ksud"
+
+  cp "$GITHUB_WORKSPACE/ksud" local_su_binary
+  chmod 755 local_su_binary
+  ./magiskboot cpio ramdisk.cpio \
+    "mkdir 0755 system" \
+    "mkdir 0755 system/bin" \
+    "add 06755 system/bin/su ./local_su_binary"
+  rm -f local_su_binary
+
+  # --- CRITIQUE : sans ceci, rien n'exécute jamais ksud au boot (AUTO_INITRC_HOOK est désactivé) ---
+  echo "=== Ajout du déclencheur init.rc pour lancer ksud au boot ==="
+  ./magiskboot cpio ramdisk.cpio "extract init.rc /tmp/init.rc"
+  if [ ! -f /tmp/init.rc ]; then
+    echo "❌ init.rc introuvable dans le ramdisk — impossible d'ajouter le déclencheur ksud"
+    exit 1
+  fi
+  if ! grep -q "service ksud" /tmp/init.rc; then
+    cat >> /tmp/init.rc << 'RCEOF'
+
+on post-fs-data
+    start ksud
+
+service ksud /data/adb/ksu/bin/ksud daemon
+    user root
+    seclabel u:r:su:s0
+    disabled
+    oneshot
+RCEOF
+    echo "✅ Bloc service ksud ajouté à init.rc"
+  else
+    echo "✅ Bloc service ksud déjà présent dans init.rc"
+  fi
+  ./magiskboot cpio ramdisk.cpio "add 0750 init.rc /tmp/init.rc"
+
   ./magiskboot repack boot.img new-boot.img
   mv new-boot.img ../final_boot.img
   cd ..
@@ -632,6 +749,7 @@ mkdir -p output
 cp final_boot.img output/ReSukiSU-SusFS-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
+cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
 
 echo "=== BUILD TERMINÉ ==="
 ls -lh output/
