@@ -25,7 +25,7 @@ git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git \
 cd kernel_sources
 git log --oneline -1
 
-# ==================== 2. INTÉGRATION ReSukiSU (commit épinglé) ====================
+# ==================== 2. INTÉGRATION ReSukiSU ====================
 echo ""
 echo "=== Intégration ReSukiSU au commit $KSU_COMMIT ==="
 
@@ -148,11 +148,11 @@ fi
 
 echo "✅ Fix uapi terminé"
 
-# ==================== 2e. FIX DES SYMBOLES KSU MANQUANTS (ksu_cred global) ====================
+# ==================== 2e. FIX DES SYMBOLES KSU MANQUANTS ====================
 echo ""
 echo "=== Fix des symboles KSU manquants (ksu_cred) ==="
 
-# 1. Créer le header avec les déclarations
+# 1. Créer le header avec les déclarations (TYPE CORRIGÉ : struct cred * SANS const)
 mkdir -p drivers/kernelsu/include
 cat > drivers/kernelsu/include/ksu_globals.h << 'KSU_H_EOF'
 #ifndef __KSU_GLOBALS_H
@@ -162,7 +162,7 @@ cat > drivers/kernelsu/include/ksu_globals.h << 'KSU_H_EOF'
 #include <linux/types.h>
 
 #ifdef CONFIG_KSU
-extern const struct cred *ksu_cred;
+extern struct cred *ksu_cred;
 extern u32 ksu_ksu_sid;
 extern u32 ksu_priv_app_sid;
 #endif
@@ -170,51 +170,12 @@ extern u32 ksu_priv_app_sid;
 #endif /* __KSU_GLOBALS_H */
 KSU_H_EOF
 
-echo "✅ ksu_globals.h créé"
+echo "✅ ksu_globals.h créé (type struct cred * corrigé)"
 
-# 2. Définir ksu_cred dans un fichier central
-KSU_CRED_DEF=$(grep -rn "const struct cred \*ksu_cred" drivers/kernelsu/ 2>/dev/null | grep -v "extern" | head -1)
-if [ -z "$KSU_CRED_DEF" ]; then
-    echo "⚠️ ksu_cred non défini — création dans core/init.c"
+# 2. NE PAS définir ksu_cred (il est déjà dans core/init.c)
+echo "✅ ksu_cred déjà défini dans core/init.c (on n'y touche pas)"
 
-    KSU_CORE=$(find drivers/kernelsu -name "init.c" -o -name "core.c" -o -name "ksu.c" 2>/dev/null | head -1)
-
-    if [ -z "$KSU_CORE" ]; then
-        KSU_CORE="drivers/kernelsu/include/ksu_globals.c"
-        cat > "$KSU_CORE" << 'KSU_C_EOF'
-#include "ksu_globals.h"
-
-const struct cred *ksu_cred = NULL;
-EXPORT_SYMBOL(ksu_cred);
-
-u32 ksu_ksu_sid = 0;
-EXPORT_SYMBOL(ksu_ksu_sid);
-
-u32 ksu_priv_app_sid = 0;
-EXPORT_SYMBOL(ksu_priv_app_sid);
-KSU_C_EOF
-        echo "✅ $KSU_CORE créé"
-
-        if [ -f "drivers/kernelsu/Kbuild" ]; then
-            if ! grep -q "ksu_globals.o" drivers/kernelsu/Kbuild; then
-                echo "kernelsu-objs += include/ksu_globals.o" >> drivers/kernelsu/Kbuild
-                echo "→ ksu_globals.o ajouté au Kbuild"
-            fi
-        fi
-    else
-        cat >> "$KSU_CORE" << 'KSU_C_EOF'
-
-/* ksu_cred global */
-const struct cred *ksu_cred = NULL;
-EXPORT_SYMBOL(ksu_cred);
-KSU_C_EOF
-        echo "✅ ksu_cred ajouté dans $KSU_CORE"
-    fi
-else
-    echo "✅ ksu_cred déjà défini : $KSU_CRED_DEF"
-fi
-
-# 3. Ajouter l'include dans TOUS les .c du dossier kernelsu
+# 3. Ajouter l'include dans TOUS les .c du dossier kernelsu (SAUF ceux qui l'ont déjà)
 echo "→ Ajout de #include \"ksu_globals.h\" dans tous les .c"
 find drivers/kernelsu -name "*.c" | while read file; do
     if ! grep -q "ksu_globals.h" "$file"; then
