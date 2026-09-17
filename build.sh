@@ -444,6 +444,39 @@ with open('fs/stat.c', 'w') as f:
     f.write(content)
 PYEOF
 
+echo "=== Correction inconditionnelle et robuste de fs/namespace.c (CL_COPY_MNT_NS) ==="
+python3 - << 'PYEOF'
+import re
+
+with open('fs/namespace.c', 'r') as f:
+    content = f.read()
+
+content = re.sub(r'^\s*n(?=#ifdef|#endif|#include|#define|extern)', '', content, flags=re.MULTILINE)
+
+if 'define CL_COPY_MNT_NS' not in content:
+    decl = '''
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#include <linux/susfs_def.h>
+extern bool susfs_is_current_ksu_domain(void);
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+#define CL_COPY_MNT_NS BIT(25)
+#endif
+'''
+    match = re.search(r'^#include\s+[^\n]+\n', content, flags=re.MULTILINE)
+    if match:
+        insert_pos = match.end()
+        content = content[:insert_pos] + decl + content[insert_pos:]
+        print("✅ CL_COPY_MNT_NS et déclarations injectées dans fs/namespace.c")
+    else:
+        print("❌ Aucun #include trouvé dans fs/namespace.c — injection impossible")
+else:
+    print("✅ CL_COPY_MNT_NS déjà présent dans fs/namespace.c")
+
+with open('fs/namespace.c', 'w') as f:
+    f.write(content)
+PYEOF
+
+
 # Vérification stricte : aucun .rej ne doit persister
 if find . -name "*.rej" -type f | grep -q .; then
     echo "❌ ÉCHEC CRITIQUE : Des rejets de patch SuSFS persistent."
@@ -562,7 +595,68 @@ else
   exit 1
 fi
 
-# ==================== 8. REPACK (sans ksud) ====================
+# ==================== 7b. COMPILATION KSUD (ReSukiSU) ====================
+echo "=== Compilation de ksud (ReSukiSU) ==="
+cd "$GITHUB_WORKSPACE"
+
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+
+rustup toolchain install nightly
+rustup default nightly
+rustup target add aarch64-linux-android
+
+wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+unzip -q android-ndk-r26d-linux.zip
+
+export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
+export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
+export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
+export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
+
+rm -rf "$GITHUB_WORKSPACE/ksud-src"
+git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
+cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
+
+mkdir -p .cargo
+cat > .cargo/config.toml <<EOF
+[target.aarch64-linux-android]
+linker = "$AARCH64_CLANG_PATH"
+
+[env]
+CC_aarch64_linux_android = "$AARCH64_CLANG_PATH"
+CXX_aarch64_linux_android = "$AARCH64_CLANGXX_PATH"
+AR_aarch64_linux_android = "$AR_PATH"
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
+EOF
+
+echo "=== Suppression du Cargo.lock pour re-resoudre les dependances (revision figee introuvable) ==="
+rm -f Cargo.lock
+
+export CARGO_NET_GIT_FETCH_WITH_CLI=true
+cargo +nightly build --release --target aarch64-linux-android
+
+echo "=== Recherche du binaire ksud dans tout le repo cloné ==="
+find "$GITHUB_WORKSPACE/ksud-src" -type f -name "ksud" 2>/dev/null
+KSUD_BINARY=$(find "$GITHUB_WORKSPACE/ksud-src" -type f -name "ksud" -executable 2>/dev/null | head -1)
+
+if [ -z "$KSUD_BINARY" ]; then
+    echo "❌ ksud introuvable après recherche automatique"
+    echo "=== Contenu de la racine du repo ksud-src (diagnostic) ==="
+    ls -la "$GITHUB_WORKSPACE/ksud-src/"
+    exit 1
+fi
+
+echo "✅ ksud trouvé ici : $KSUD_BINARY"
+cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
+chmod 755 "$GITHUB_WORKSPACE/ksud"
+echo "✅ ksud (ReSukiSU) compilé"
+
+cd "$GITHUB_WORKSPACE"
+
+# ==================== 8. REPACK (avec ksud) ====================
 echo "=== Téléchargement des images stock ==="
 cd $GITHUB_WORKSPACE
 
@@ -588,6 +682,22 @@ if [ -f "boot-stock.img" ]; then
   cd repack
   ./magiskboot unpack boot.img
   cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
+
+  echo "=== Installation de ksud dans le ramdisk ==="
+  ./magiskboot cpio ramdisk.cpio \
+    "mkdir 0755 data" \
+    "mkdir 0755 data/adb" \
+    "mkdir 0755 data/adb/ksud" \
+    "add 0755 data/adb/ksud/ksud $GITHUB_WORKSPACE/ksud"
+
+  cp "$GITHUB_WORKSPACE/ksud" local_su_binary
+  chmod 755 local_su_binary
+  ./magiskboot cpio ramdisk.cpio \
+    "mkdir 0755 system" \
+    "mkdir 0755 system/bin" \
+    "add 06755 system/bin/su ./local_su_binary"
+  rm -f local_su_binary
+
   ./magiskboot repack boot.img new-boot.img
   mv new-boot.img ../final_boot.img
   cd ..
@@ -599,6 +709,7 @@ mkdir -p output
 cp final_boot.img output/ReSukiSU-SusFS-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
+cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
 
 echo "=== BUILD TERMINÉ ==="
 ls -lh output/
