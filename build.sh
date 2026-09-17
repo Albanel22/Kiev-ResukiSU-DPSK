@@ -659,7 +659,7 @@ echo "✅ ksud (ReSukiSU synchronisé) compilé"
 
 cd "$GITHUB_WORKSPACE"
 
-# ==================== 8. REPACK (avec ksud) ====================
+# ==================== 8. REPACK (avec ksud & init.ksu.rc) ====================
 echo "=== Téléchargement des images stock ==="
 cd $GITHUB_WORKSPACE
 
@@ -686,12 +686,30 @@ if [ -f "boot-stock.img" ]; then
     ./magiskboot unpack boot.img
     cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
 
-    echo "=== Installation de ksud dans le ramdisk ==="
+    echo "=== Création du script init.ksu.rc ==="
+    cat << 'RC_EOF' > init.ksu.rc
+on early-init
+    export PATH /data/adb/ksu/bin:$PATH
+
+service ksu_daemon /data/adb/ksu/bin/ksud daemon
+    class late_start
+    seclabel u:r:su:s0
+    oneshot
+    user root
+RC_EOF
+
+    echo "=== Injection de init.ksu.rc et du daemon dans le ramdisk ==="
+    if [ -f "init.rc" ]; then
+        sed -i '1s/^/import \/init.ksu.rc\n/' init.rc
+    fi
+
     ./magiskboot cpio ramdisk.cpio \
         "mkdir 0755 data" \
         "mkdir 0755 data/adb" \
-        "mkdir 0755 data/adb/ksud" \
-        "add 0755 data/adb/ksud/ksud $GITHUB_WORKSPACE/ksud"
+        "mkdir 0755 data/adb/ksu" \
+        "mkdir 0755 data/adb/ksu/bin" \
+        "add 0755 data/adb/ksu/bin/ksud $GITHUB_WORKSPACE/ksud" \
+        "add 0644 init.ksu.rc init.ksu.rc"
 
     cp "$GITHUB_WORKSPACE/ksud" local_su_binary
     chmod 755 local_su_binary
@@ -699,7 +717,7 @@ if [ -f "boot-stock.img" ]; then
         "mkdir 0755 system" \
         "mkdir 0755 system/bin" \
         "add 06755 system/bin/su ./local_su_binary"
-    rm -f local_su_binary
+    rm -f local_su_binary init.ksu.rc
 
     ./magiskboot repack boot.img new-boot.img
     mv new-boot.img ../final_boot.img
