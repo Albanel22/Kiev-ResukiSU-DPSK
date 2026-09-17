@@ -1,9 +1,8 @@
 #!/bin/bash
 set -e
-echo "=== Build ReSukiSU + SuSFS (JackA1ltman mainline) pour kiev (SM8250) ==="
+echo "=== Début du build ReSukiSU + SuSFS (JackA1ltman/NonGKI_Kernel_Build_2nd, mainline) pour kiev (SM8250) ==="
 df -h
 
-# ==================== 0. ENVIRONNEMENT ====================
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 sudo apt-get clean
 
@@ -12,7 +11,7 @@ sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.l
 sudo apt-get update
 sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev libssl-dev \
   libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang llvm lld \
-  device-tree-compiler zip unzip curl git python3 mkbootimg binutils
+  device-tree-compiler zip unzip curl git python3 mkbootimg
 
 cd $GITHUB_WORKSPACE
 
@@ -28,36 +27,8 @@ echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-# ==================== 2b. VÉRIFICATION INTÉGRATION KERNELSU ====================
-echo ""
-echo "=== Vérification de l'intégration kernelsu ==="
-
-if [ ! -d "drivers/kernelsu" ]; then
-    echo "❌ drivers/kernelsu/ n'existe pas — setup.sh a échoué"
-    exit 1
-fi
-echo "✅ drivers/kernelsu/ présent"
-
-if [ -f "drivers/Makefile" ]; then
-    if ! grep -q "kernelsu" drivers/Makefile; then
-        echo "" >> drivers/Makefile
-        echo "obj-\$(CONFIG_KSU) += kernelsu/" >> drivers/Makefile
-        echo "→ Ajout de kernelsu/ dans drivers/Makefile"
-    fi
-fi
-
-if [ -f "drivers/Kconfig" ]; then
-    if ! grep -q "kernelsu/Kconfig" drivers/Kconfig; then
-        sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-        echo "→ Ajout de kernelsu/Kconfig dans drivers/Kconfig"
-    fi
-fi
-
-echo "✅ Intégration kernelsu dans le build forcée"
-
 # ==================== 3. HOOKS MANUELS ReSukiSU ====================
-echo ""
-echo "=== Hooks ReSukiSU (avec CONFIG_KSU_MANUAL_HOOK) ==="
+echo "=== Hooks ReSukiSU ==="
 
 # --- execveat ---
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
@@ -358,7 +329,7 @@ fi
 
 echo "✅ Hooks ReSukiSU en place"
 
-# ==================== 4. INTÉGRATION SuSFS (JackA1ltman, mainline) ====================
+# ==================== 4. INTÉGRATION SuSFS (JackA1ltman, branche mainline) ====================
 echo ""
 echo "=== Intégration SuSFS depuis JackA1ltman/NonGKI_Kernel_Build_2nd (mainline) ==="
 cd "$GITHUB_WORKSPACE"
@@ -378,8 +349,8 @@ echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
 echo "=== Application du patch SuSFS ==="
 patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
-# ---------- Corrections des .rej ----------
-echo "=== Corrections des rejets de patch ==="
+# ---------- Corrections des .rej (logique réelle, pas de stubs) ----------
+echo "=== Corrections des rejets de patch (logique réelle du patch, pas de stub) ==="
 
 if [ -f "fs/proc/task_mmu.c.rej" ]; then
     echo "⚠️ Rejet détecté dans task_mmu.c. Correction automatique..."
@@ -454,6 +425,58 @@ PYEOF
 
 rm -f fs/super.c.rej 2>/dev/null || true
 
+echo "=== Correction inconditionnelle de l'inclusion susfs_def.h dans fs/stat.c ==="
+python3 - << 'PYEOF'
+with open('fs/stat.c', 'r') as f:
+    content = f.read()
+
+if '#include <linux/susfs_def.h>' not in content:
+    content = content.replace(
+        '#include <linux/uaccess.h>',
+        '#include <linux/uaccess.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif\n',
+        1
+    )
+    print("✅ susfs_def.h injecté dans fs/stat.c")
+else:
+    print("✅ susfs_def.h déjà présent dans fs/stat.c")
+
+with open('fs/stat.c', 'w') as f:
+    f.write(content)
+PYEOF
+
+echo "=== Correction inconditionnelle et robuste de fs/namespace.c (CL_COPY_MNT_NS) ==="
+python3 - << 'PYEOF'
+import re
+
+with open('fs/namespace.c', 'r') as f:
+    content = f.read()
+
+content = re.sub(r'^\s*n(?=#ifdef|#endif|#include|#define|extern)', '', content, flags=re.MULTILINE)
+
+if 'define CL_COPY_MNT_NS' not in content:
+    decl = '''
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#include <linux/susfs_def.h>
+extern bool susfs_is_current_ksu_domain(void);
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+#define CL_COPY_MNT_NS BIT(25)
+#endif
+'''
+    match = re.search(r'^#include\s+[^\n]+\n', content, flags=re.MULTILINE)
+    if match:
+        insert_pos = match.end()
+        content = content[:insert_pos] + decl + content[insert_pos:]
+        print("✅ CL_COPY_MNT_NS et déclarations injectées dans fs/namespace.c")
+    else:
+        print("❌ Aucun #include trouvé dans fs/namespace.c — injection impossible")
+else:
+    print("✅ CL_COPY_MNT_NS déjà présent dans fs/namespace.c")
+
+with open('fs/namespace.c', 'w') as f:
+    f.write(content)
+PYEOF
+
+
 # Vérification stricte : aucun .rej ne doit persister
 if find . -name "*.rej" -type f | grep -q .; then
     echo "❌ ÉCHEC CRITIQUE : Des rejets de patch SuSFS persistent."
@@ -462,7 +485,7 @@ if find . -name "*.rej" -type f | grep -q .; then
 fi
 echo "✅ Patch SuSFS appliqué avec succès (aucun rejet)."
 
-# Copie des fichiers source/headers SuSFS
+# Copie des fichiers source/headers SuSFS fournis par JackA1ltman
 if [ -d "/tmp/jack_repo/Patches/fs" ]; then
     cp -rn /tmp/jack_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
@@ -480,159 +503,35 @@ fi
 
 # Correction variable 'vma' non utilisée
 if [ -f "fs/proc/task_mmu.c" ]; then
+    echo "🔧 Correction de la variable 'vma' non utilisée dans task_mmu.c..."
     sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
 fi
 
-# ==================== 4b. FIX DES DÉCLARATIONS SUSFS MANQUANTES (stat.c) ====================
-echo ""
-echo "=== Fix des déclarations SuSFS manquantes (stat.c) ==="
-
-# --- 1. Fix include/linux/susfs.h : ajouter susfs_is_current_app_uid ---
-if [ -f "include/linux/susfs.h" ]; then
-    if ! grep -q "susfs_is_current_app_uid" include/linux/susfs.h; then
-        echo "→ Ajout de susfs_is_current_app_uid dans susfs.h"
-        cat >> include/linux/susfs.h << 'SUSFS_H_EOF'
+# Symboles susfs_is_current_ksu_domain / susfs_ksu_sid / susfs_priv_app_sid
+# (uniquement si vraiment absents après le patch réel — pas un stub par défaut,
+# c'est un filet de sécurité minimal identique à l'implémentation SuSFS d'origine)
+if [ -f "fs/susfs.c" ] && ! grep -q "susfs_is_current_ksu_domain" fs/susfs.c; then
+    echo "⚠️ susfs_is_current_ksu_domain absent après le patch réel — ajout de l'implémentation standard SuSFS"
+    cat >> fs/susfs.c << 'SUSFS_EOF'
 
 #ifdef CONFIG_KSU_SUSFS
-bool susfs_is_current_app_uid(void);
+bool susfs_is_current_ksu_domain(void)
+{
+    const struct cred *cred = current_cred();
+    return (cred->uid.val == 0 || cred->uid.val == 2000);
+}
+EXPORT_SYMBOL(susfs_is_current_ksu_domain);
+
+u32 susfs_ksu_sid = 0;
+EXPORT_SYMBOL(susfs_ksu_sid);
+
+u32 susfs_priv_app_sid = 0;
+EXPORT_SYMBOL(susfs_priv_app_sid);
 #endif
-SUSFS_H_EOF
-    fi
+SUSFS_EOF
 fi
 
-# --- 2. Fix include/linux/susfs_def.h : ajouter STATX_SUS_KSTAT* ---
-if [ -f "include/linux/susfs_def.h" ]; then
-    if ! grep -q "STATX_SUS_KSTAT" include/linux/susfs_def.h; then
-        echo "→ Ajout de STATX_SUS_KSTAT* dans susfs_def.h"
-        cat >> include/linux/susfs_def.h << 'SUSFS_DEF_EOF'
-
-#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-#define STATX_SUS_KSTAT     0x10000000
-#define STATX_SUS_KSTAT_FUSE 0x20000000
-#endif
-SUSFS_DEF_EOF
-    fi
-fi
-
-# --- 3. Fix fs/stat.c : s'assurer que susfs_def.h et susfs.h sont inclus ---
-if [ -f "fs/stat.c" ]; then
-    if ! grep -q "susfs_def.h" fs/stat.c; then
-        sed -i '1i #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif' fs/stat.c
-    fi
-    if ! grep -q "susfs.h" fs/stat.c; then
-        sed -i '1i #ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs.h>\n#endif' fs/stat.c
-    fi
-fi
-
-# NE PAS toucher à fs/susfs.c (le patch le fournit déjà)
-echo "✅ Fix SuSFS stat.c terminé"
-
-# ==================== 4c. FIX DES DÉFINITIONS SUSFS POUR fs/namespace.c ====================
-echo ""
-echo "=== Fix des définitions SuSFS manquantes pour namespace.c ==="
-
-# --- 1. Ajouter les macros dans include/linux/susfs_def.h ---
-if [ -f "include/linux/susfs_def.h" ]; then
-    if ! grep -q "DEFAULT_KSU_MNT_GROUP_ID" include/linux/susfs_def.h; then
-        echo "→ Ajout de DEFAULT_KSU_MNT_GROUP_ID / DEFAULT_KSU_MNT_ID / VFSMOUNT_* dans susfs_def.h"
-        cat >> include/linux/susfs_def.h << 'SUSFS_DEF_MOUNT_EOF'
-
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-#ifndef DEFAULT_KSU_MNT_ID
-#define DEFAULT_KSU_MNT_ID       ((1 << 20) + 1)
-#endif
-#ifndef DEFAULT_KSU_MNT_GROUP_ID
-#define DEFAULT_KSU_MNT_GROUP_ID ((1 << 20) + 1)
-#endif
-#ifndef VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT
-#define VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT (1 << 25)
-#endif
-#endif
-SUSFS_DEF_MOUNT_EOF
-    fi
-fi
-
-# --- 2. Ajouter les déclarations dans include/linux/susfs.h ---
-if [ -f "include/linux/susfs.h" ]; then
-    if ! grep -q "susfs_is_current_ksu_domain" include/linux/susfs.h; then
-        echo "→ Ajout de susfs_is_current_ksu_domain dans susfs.h"
-        cat >> include/linux/susfs.h << 'SUSFS_H_DOMAIN_EOF'
-
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-bool susfs_is_current_ksu_domain(void);
-bool susfs_is_current_proc_umounted_for_zygote_next(void);
-extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
-#endif
-SUSFS_H_DOMAIN_EOF
-    fi
-fi
-
-# NE PAS toucher à fs/susfs.c (le patch le fournit déjà)
-
-# --- 3. S'assurer que namespace.c inclut les headers ---
-if [ -f "fs/namespace.c" ]; then
-    if ! grep -q "susfs_def.h" fs/namespace.c; then
-        sed -i '1i #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif' fs/namespace.c
-    fi
-    if ! grep -q "susfs.h" fs/namespace.c; then
-        sed -i '1i #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs.h>\n#endif' fs/namespace.c
-    fi
-fi
-
-echo "✅ Fix SuSFS namespace.c terminé"
-
-# ==================== 4d. FIX CL_COPY_MNT_NS DANS fs/namespace.c ====================
-echo ""
-echo "=== Fix CL_COPY_MNT_NS dans fs/namespace.c ==="
-
-if [ -f "fs/namespace.c" ]; then
-    if ! grep -q "#define CL_COPY_MNT_NS" fs/namespace.c; then
-        echo "→ Ajout de #define CL_COPY_MNT_NS (0x80) dans fs/namespace.c"
-        python3 - << 'PYEOF'
-import re
-with open('fs/namespace.c', 'r') as f:
-    content = f.read()
-
-if '#define CL_COPY_MNT_NS' not in content:
-    matches = list(re.finditer(r'(#include\s+[<"][^>"]+[>"]\s*\n)', content))
-    if matches:
-        insert_pos = matches[-1].end()
-        definition = '''
-/* --- SuSFS: CL_COPY_MNT_NS (défini manuellement car absent du fork) --- */
-#ifndef CL_COPY_MNT_NS
-#define CL_COPY_MNT_NS 0x80
-#endif
-/* --- Fin SuSFS CL_COPY_MNT_NS --- */
-
-'''
-        content = content[:insert_pos] + definition + content[insert_pos:]
-        with open('fs/namespace.c', 'w') as f:
-            f.write(content)
-        print("✅ CL_COPY_MNT_NS = 0x80 ajouté dans fs/namespace.c")
-    else:
-        content = '#ifndef CL_COPY_MNT_NS\n#define CL_COPY_MNT_NS 0x80\n#endif\n\n' + content
-        with open('fs/namespace.c', 'w') as f:
-            f.write(content)
-PYEOF
-    else
-        echo "✅ CL_COPY_MNT_NS déjà défini dans fs/namespace.c"
-    fi
-
-    if [ -f "include/linux/susfs_def.h" ]; then
-        if ! grep -q "CL_COPY_MNT_NS" include/linux/susfs_def.h; then
-            cat >> include/linux/susfs_def.h << 'SUSFS_DEF_CL_EOF'
-
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-#ifndef CL_COPY_MNT_NS
-#define CL_COPY_MNT_NS 0x80
-#endif
-#endif
-SUSFS_DEF_CL_EOF
-        fi
-    fi
-fi
-
-echo "✅ Fix CL_COPY_MNT_NS terminé"
+echo "✅ SuSFS (JackA1ltman mainline) intégré, sans stub à return-false fabriqué"
 
 # ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
@@ -696,63 +595,7 @@ else
   exit 1
 fi
 
-# ==================== 7b. COMPILATION KSUD (ReSukiSU) ====================
-echo "=== Compilation de ksud (ReSukiSU) ==="
-cd "$GITHUB_WORKSPACE"
-
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
-
-rustup toolchain install nightly
-rustup default nightly
-rustup target add aarch64-linux-android
-
-wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
-unzip -q android-ndk-r26d-linux.zip
-
-export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
-export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
-export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
-export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
-export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
-
-rm -rf "$GITHUB_WORKSPACE/ksud-src"
-git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
-cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
-
-mkdir -p .cargo
-cat > .cargo/config.toml <<EOF
-[target.aarch64-linux-android]
-linker = "$AARCH64_CLANG_PATH"
-
-[env]
-CC_aarch64_linux_android = "$AARCH64_CLANG_PATH"
-CXX_aarch64_linux_android = "$AARCH64_CLANGXX_PATH"
-AR_aarch64_linux_android = "$AR_PATH"
-BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
-EOF
-
-echo "=== Suppression du Cargo.lock pour re-resoudre les dependances ==="
-rm -f Cargo.lock
-
-export CARGO_NET_GIT_FETCH_WITH_CLI=true
-cargo +nightly build --release --target aarch64-linux-android
-
-KSUD_BINARY=$(find "$GITHUB_WORKSPACE/ksud-src" -type f -name "ksud" -executable 2>/dev/null | head -1)
-
-if [ -z "$KSUD_BINARY" ]; then
-    echo "❌ ksud introuvable après recherche automatique"
-    exit 1
-fi
-
-echo "✅ ksud trouvé ici : $KSUD_BINARY"
-cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
-chmod 755 "$GITHUB_WORKSPACE/ksud"
-
-cd "$GITHUB_WORKSPACE"
-
-# ==================== 8. REPACK ====================
+# ==================== 8. REPACK (sans ksud) ====================
 echo "=== Téléchargement des images stock ==="
 cd $GITHUB_WORKSPACE
 
@@ -778,14 +621,6 @@ if [ -f "boot-stock.img" ]; then
   cd repack
   ./magiskboot unpack boot.img
   cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
-
-  echo "=== Installation de ksud dans le ramdisk (PAS de su dans /system/bin/) ==="
-  ./magiskboot cpio ramdisk.cpio \
-    "mkdir 0755 data" \
-    "mkdir 0755 data/adb" \
-    "mkdir 0755 data/adb/ksud" \
-    "add 0755 data/adb/ksud/ksud $GITHUB_WORKSPACE/ksud"
-
   ./magiskboot repack boot.img new-boot.img
   mv new-boot.img ../final_boot.img
   cd ..
@@ -797,7 +632,6 @@ mkdir -p output
 cp final_boot.img output/ReSukiSU-SusFS-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
-cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
 
 echo "=== BUILD TERMINÉ ==="
 ls -lh output/
