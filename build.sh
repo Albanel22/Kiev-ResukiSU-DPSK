@@ -3,7 +3,6 @@ set -e
 echo "=== Build ReSukiSU v4.2.0-rc1 (35061) + SuSFS pour kiev (SM8250) ==="
 df -h
 
-# Commit ReSukiSU épinglé (v4.2.0-rc1, 12 août 2026)
 KSU_COMMIT="a9216b04e29cc973ddbf845342f2cbf85b47b460"
 
 # ==================== 0. ENVIRONNEMENT ====================
@@ -38,12 +37,10 @@ git checkout "$KSU_COMMIT"
 echo "✅ ReSukiSU checkouté à $KSU_COMMIT"
 git log --oneline -1
 
-# Copier le kernel dans le repo principal
 cd "$GITHUB_WORKSPACE/kernel_sources"
 rm -rf drivers/kernelsu kernelSU susfs4ksu
 cp -r /tmp/resukisu_repo/kernel drivers/kernelsu
 
-# Copier le dossier include s'il n'a pas été copié
 if [ -d "/tmp/resukisu_repo/kernel/include" ] && [ ! -d "drivers/kernelsu/include" ]; then
     cp -r /tmp/resukisu_repo/kernel/include drivers/kernelsu/include
     echo "→ Copie de drivers/kernelsu/include"
@@ -56,7 +53,6 @@ fi
 echo "✅ drivers/kernelsu copié"
 ls drivers/kernelsu/ | head -10
 
-# Ajouter dans drivers/Makefile
 if [ -f "drivers/Makefile" ]; then
     if ! grep -q "kernelsu" drivers/Makefile; then
         echo "" >> drivers/Makefile
@@ -65,7 +61,6 @@ if [ -f "drivers/Makefile" ]; then
     fi
 fi
 
-# Ajouter dans drivers/Kconfig
 if [ -f "drivers/Kconfig" ]; then
     if ! grep -q "kernelsu/Kconfig" drivers/Kconfig; then
         sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
@@ -80,123 +75,6 @@ fi
 
 echo "✅ Intégration kernelsu terminée"
 
-# ==================== 2d. COPIE DU DOSSIER UAPI ====================
-echo ""
-echo "=== Copie du dossier uapi ==="
-
-# Le repo ReSukiSU a un dossier uapi/ à la racine (pas dans kernel/)
-if [ -d "/tmp/resukisu_repo/uapi" ]; then
-    echo "→ Copie de /tmp/resukisu_repo/uapi vers kernel_sources/include/uapi/"
-    mkdir -p "$GITHUB_WORKSPACE/kernel_sources/include/uapi"
-    cp -rn /tmp/resukisu_repo/uapi/* "$GITHUB_WORKSPACE/kernel_sources/include/uapi/" 2>/dev/null || true
-    echo "✅ uapi copié dans include/uapi/"
-    ls include/uapi/ | head -10
-else
-    echo "⚠️ /tmp/resukisu_repo/uapi n'existe pas — recherche alternative"
-    find /tmp/resukisu_repo -name "app_profile.h" -path "*uapi*" 2>/dev/null
-fi
-
-# Créer un lien symbolique pour que <uapi/app_profile.h> soit trouvé
-if [ -d "/tmp/resukisu_repo/uapi" ]; then
-    # Créer le lien dans drivers/kernelsu/uapi
-    mkdir -p "drivers/kernelsu/uapi"
-    cp -rn /tmp/resukisu_repo/uapi/* "drivers/kernelsu/uapi/" 2>/dev/null || true
-    echo "✅ uapi copié dans drivers/kernelsu/uapi/"
-fi
-
-# Ajouter les chemins d'include dans le Kbuild
-if [ -f "drivers/kernelsu/Kbuild" ]; then
-    if ! grep -q "uapi" drivers/kernelsu/Kbuild; then
-        echo "→ Ajout des chemins d'include uapi dans Kbuild"
-        # Ajouter -I avec les chemins uapi
-        sed -i '/^ccflags-y += -I\$(src)/i ccflags-y += -I$(srctree)/include/uapi\nccflags-y += -I$(src)/uapi' drivers/kernelsu/Kbuild
-    fi
-fi
-
-echo "✅ Fix uapi terminé"
-
-# ==================== 2e. FIX DES SYMBOLES KSU MANQUANTS ====================
-echo ""
-echo "=== Fix des symboles KSU manquants (ksu_cred, etc.) ==="
-
-# Chercher où ksu_cred est défini
-echo "--- Recherche de ksu_cred ---"
-grep -rn "ksu_cred" drivers/kernelsu/ 2>/dev/null | head -20
-
-# Si le fichier où ksu_cred est défini n'a pas la déclaration extern,
-# on l'ajoute dans les headers
-if [ -f "drivers/kernelsu/runtime/ksud_integration.c" ]; then
-    echo "→ Vérification de ksud_integration.c"
-fi
-
-# Créer un header central avec les déclarations manquantes
-cat > drivers/kernelsu/include/ksu_globals.h << 'KSU_H_EOF'
-#ifndef __KSU_GLOBALS_H
-#define __KSU_GLOBALS_H
-
-#include <linux/cred.h>
-#include <linux/types.h>
-
-/* Déclarations globales KSU */
-#ifdef CONFIG_KSU
-extern const struct cred *ksu_cred;
-extern u32 ksu_ksu_sid;
-extern u32 ksu_priv_app_sid;
-#endif
-
-#endif /* __KSU_GLOBALS_H */
-KSU_H_EOF
-
-echo "✅ Création de drivers/kernelsu/include/ksu_globals.h"
-
-# Vérifier que ksu_cred est bien défini quelque part
-KSU_CRED_DEF=$(grep -rn "const struct cred \*ksu_cred" drivers/kernelsu/ 2>/dev/null | grep -v "extern" | head -1)
-if [ -z "$KSU_CRED_DEF" ]; then
-    echo "⚠️ ksu_cred n'est défini nulle part — ajout dans un fichier central"
-    # Ajouter la définition dans ksud_integration.c (le plus probable)
-    if [ -f "drivers/kernelsu/runtime/ksud_integration.c" ]; then
-        cat >> drivers/kernelsu/runtime/ksud_integration.c << 'KSU_C_EOF'
-
-/* Variable globale ksu_cred (fallback si absente) */
-const struct cred *ksu_cred = NULL;
-EXPORT_SYMBOL(ksu_cred);
-KSU_C_EOF
-        echo "✅ ksu_cred ajouté dans ksud_integration.c"
-    else
-        # Chercher un fichier .c principal
-        KSU_CORE=$(find drivers/kernelsu -name "core.c" -o -name "ksu.c" -o -name "init.c" 2>/dev/null | head -1)
-        if [ -n "$KSU_CORE" ]; then
-            cat >> "$KSU_CORE" << 'KSU_C_EOF'
-
-/* Variable globale ksu_cred (fallback si absente) */
-const struct cred *ksu_cred = NULL;
-EXPORT_SYMBOL(ksu_cred);
-KSU_C_EOF
-            echo "✅ ksu_cred ajouté dans $KSU_CORE"
-        fi
-    fi
-else
-    echo "✅ ksu_cred déjà défini : $KSU_CRED_DEF"
-fi
-
-# Ajouter l'include dans allowlist.c
-if [ -f "drivers/kernelsu/policy/allowlist.c" ]; then
-    if ! grep -q "ksu_globals.h" drivers/kernelsu/policy/allowlist.c; then
-        echo "→ Ajout de #include \"ksu_globals.h\" dans allowlist.c"
-        sed -i '1i #include "ksu_globals.h"' drivers/kernelsu/policy/allowlist.c
-    fi
-fi
-
-# Ajouter -I$(src)/include dans le Kbuild
-if [ -f "drivers/kernelsu/Kbuild" ]; then
-    if ! grep -q '\-I\$(src)/include' drivers/kernelsu/Kbuild; then
-        sed -i '/^ccflags-y += -I\$(src)/i ccflags-y += -I$(src)/include' drivers/kernelsu/Kbuild
-        echo "→ Ajout de -I\$(src)/include dans Kbuild"
-    fi
-fi
-
-echo "✅ Fix des symboles KSU terminé"
-
 # ==================== 2c. CONTOURNEMENT DU CHECK SUBMODULE ====================
 echo ""
 echo "=== Contournement du check git submodule dans Kbuild ==="
@@ -205,7 +83,6 @@ if [ -f "drivers/kernelsu/Kbuild" ]; then
     echo "→ Contenu avant :"
     grep -n "You should use\|You should integrate" drivers/kernelsu/Kbuild || echo "(rien trouvé)"
 
-    # Remplacer les $(error ...) par $(info ...)
     sed -i 's/\$(error You should use \$(REPO_NAME) as a git submodule instead of copying code directly)/\$(info Submodule check bypassed)/g' drivers/kernelsu/Kbuild
     sed -i 's/\$(error You should use ReSukiSU as a git submodule instead of copying code directly)/\$(info Submodule check bypassed)/g' drivers/kernelsu/Kbuild
     sed -i 's/\$(error You should integrate susfs in your kernel.)/\$(info SuSFS check bypassed)/g' drivers/kernelsu/Kbuild
@@ -216,48 +93,150 @@ if [ -f "drivers/kernelsu/Kbuild" ]; then
     grep -n "Submodule check bypassed\|SuSFS check bypassed" drivers/kernelsu/Kbuild || echo "(modifié)"
 fi
 
-# Forcer KSU_VERSION (car sans .git, le calcul échoue)
 if [ -f "drivers/kernelsu/Kbuild" ]; then
     python3 - << 'PYEOF'
 import re
-
 with open('drivers/kernelsu/Kbuild', 'r') as f:
     content = f.read()
 
-# Forcer KSU_VERSION à 35061
 content = re.sub(r'^KSU_VERSION :=.*$', 'KSU_VERSION := 35061', content, flags=re.MULTILINE)
 content = re.sub(r'^KSU_LOCAL_VERSION :=.*$', 'KSU_LOCAL_VERSION := 4361', content, flags=re.MULTILINE)
-
-# Forcer les variables Git-dépendantes
 content = re.sub(r'^KSU_TAG_NAME\s*:=.*$', 'KSU_TAG_NAME := v4.2.0-rc1', content, flags=re.MULTILINE)
 content = re.sub(r'^KSU_COMMIT_SHA\s*:=.*$', 'KSU_COMMIT_SHA := a9216b04', content, flags=re.MULTILINE)
 content = re.sub(r'^KSU_BRANCH_NAME\s*:=.*$', 'KSU_BRANCH_NAME := main', content, flags=re.MULTILINE)
-
-# Forcer KSU_VERSION_FULL
 content = re.sub(r'^KSU_VERSION_FULL\s*:=.*$', 'KSU_VERSION_FULL := v4.2.0-rc1-35061', content, flags=re.MULTILINE)
-
-# Neutraliser la commande git fetch
 content = content.replace(
     '$(shell cd $(KSU_SRC); [ -f ../.git/shallow ] && $(GIT_BIN) fetch --unshallow)',
-    '# Git fetch désactivé (pas de repo git)'
+    '# Git fetch désactivé'
 )
-
 with open('drivers/kernelsu/Kbuild', 'w') as f:
     f.write(content)
-
-print("✅ Kbuild modifié : KSU_VERSION=35061, KSU_TAG_NAME=v4.2.0-rc1")
+print("✅ Kbuild modifié : KSU_VERSION=35061")
 PYEOF
-
     echo "✅ Version KSU forcée à 35061"
 fi
 
 echo "✅ Contournement submodule terminé"
 
+# ==================== 2d. COPIE DU DOSSIER UAPI ====================
+echo ""
+echo "=== Copie du dossier uapi ==="
+
+if [ -d "/tmp/resukisu_repo/uapi" ]; then
+    echo "→ Copie de /tmp/resukisu_repo/uapi"
+    mkdir -p "$GITHUB_WORKSPACE/kernel_sources/include/uapi"
+    cp -rn /tmp/resukisu_repo/uapi/* "$GITHUB_WORKSPACE/kernel_sources/include/uapi/" 2>/dev/null || true
+    echo "✅ uapi copié dans include/uapi/"
+    ls include/uapi/ | head -10
+else
+    echo "⚠️ /tmp/resukisu_repo/uapi n'existe pas"
+    find /tmp/resukisu_repo -name "app_profile.h" -path "*uapi*" 2>/dev/null
+fi
+
+if [ -d "/tmp/resukisu_repo/uapi" ]; then
+    mkdir -p "drivers/kernelsu/uapi"
+    cp -rn /tmp/resukisu_repo/uapi/* "drivers/kernelsu/uapi/" 2>/dev/null || true
+    echo "✅ uapi copié dans drivers/kernelsu/uapi/"
+fi
+
+if [ -f "drivers/kernelsu/Kbuild" ]; then
+    if ! grep -q "include/uapi" drivers/kernelsu/Kbuild; then
+        echo "→ Ajout des chemins d'include uapi dans Kbuild"
+        sed -i '/^ccflags-y += -I\$(srctree)\/security\/selinux/i ccflags-y += -I$(srctree)/include/uapi\nccflags-y += -I$(src)/uapi' drivers/kernelsu/Kbuild
+    fi
+fi
+
+echo "✅ Fix uapi terminé"
+
+# ==================== 2e. FIX DES SYMBOLES KSU MANQUANTS (ksu_cred global) ====================
+echo ""
+echo "=== Fix des symboles KSU manquants (ksu_cred) ==="
+
+# 1. Créer le header avec les déclarations
+mkdir -p drivers/kernelsu/include
+cat > drivers/kernelsu/include/ksu_globals.h << 'KSU_H_EOF'
+#ifndef __KSU_GLOBALS_H
+#define __KSU_GLOBALS_H
+
+#include <linux/cred.h>
+#include <linux/types.h>
+
+#ifdef CONFIG_KSU
+extern const struct cred *ksu_cred;
+extern u32 ksu_ksu_sid;
+extern u32 ksu_priv_app_sid;
+#endif
+
+#endif /* __KSU_GLOBALS_H */
+KSU_H_EOF
+
+echo "✅ ksu_globals.h créé"
+
+# 2. Définir ksu_cred dans un fichier central
+KSU_CRED_DEF=$(grep -rn "const struct cred \*ksu_cred" drivers/kernelsu/ 2>/dev/null | grep -v "extern" | head -1)
+if [ -z "$KSU_CRED_DEF" ]; then
+    echo "⚠️ ksu_cred non défini — création dans core/init.c"
+
+    KSU_CORE=$(find drivers/kernelsu -name "init.c" -o -name "core.c" -o -name "ksu.c" 2>/dev/null | head -1)
+
+    if [ -z "$KSU_CORE" ]; then
+        KSU_CORE="drivers/kernelsu/include/ksu_globals.c"
+        cat > "$KSU_CORE" << 'KSU_C_EOF'
+#include "ksu_globals.h"
+
+const struct cred *ksu_cred = NULL;
+EXPORT_SYMBOL(ksu_cred);
+
+u32 ksu_ksu_sid = 0;
+EXPORT_SYMBOL(ksu_ksu_sid);
+
+u32 ksu_priv_app_sid = 0;
+EXPORT_SYMBOL(ksu_priv_app_sid);
+KSU_C_EOF
+        echo "✅ $KSU_CORE créé"
+
+        if [ -f "drivers/kernelsu/Kbuild" ]; then
+            if ! grep -q "ksu_globals.o" drivers/kernelsu/Kbuild; then
+                echo "kernelsu-objs += include/ksu_globals.o" >> drivers/kernelsu/Kbuild
+                echo "→ ksu_globals.o ajouté au Kbuild"
+            fi
+        fi
+    else
+        cat >> "$KSU_CORE" << 'KSU_C_EOF'
+
+/* ksu_cred global */
+const struct cred *ksu_cred = NULL;
+EXPORT_SYMBOL(ksu_cred);
+KSU_C_EOF
+        echo "✅ ksu_cred ajouté dans $KSU_CORE"
+    fi
+else
+    echo "✅ ksu_cred déjà défini : $KSU_CRED_DEF"
+fi
+
+# 3. Ajouter l'include dans TOUS les .c du dossier kernelsu
+echo "→ Ajout de #include \"ksu_globals.h\" dans tous les .c"
+find drivers/kernelsu -name "*.c" | while read file; do
+    if ! grep -q "ksu_globals.h" "$file"; then
+        sed -i '1i #include "ksu_globals.h"' "$file"
+        echo "  ✅ $file"
+    fi
+done
+
+# 4. Ajouter le chemin d'include dans Kbuild
+if [ -f "drivers/kernelsu/Kbuild" ]; then
+    if ! grep -q '\-I\$(src)/include' drivers/kernelsu/Kbuild; then
+        sed -i '/^ccflags-y += -I\$(src)/i ccflags-y += -I$(src)/include' drivers/kernelsu/Kbuild
+        echo "→ Ajout de -I\$(src)/include dans Kbuild"
+    fi
+fi
+
+echo "✅ Fix des symboles KSU terminé"
+
 # ==================== 3. HOOKS MANUELS ReSukiSU ====================
 echo ""
 echo "=== Hooks ReSukiSU ==="
 
-# --- execveat ---
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
   cat > /tmp/hook_execveat.py << 'PYEOF'
 import re
@@ -296,7 +275,6 @@ PYEOF
   python3 /tmp/hook_execveat.py
 fi
 
-# --- faccessat ---
 if ! grep -q "ksu_handle_faccessat" fs/open.c; then
   cat > /tmp/hook_faccessat.py << 'PYEOF'
 import re
@@ -335,7 +313,6 @@ PYEOF
   python3 /tmp/hook_faccessat.py
 fi
 
-# --- stat ---
 if ! grep -q "ksu_handle_fstat64_ret" fs/stat.c; then
   cat > /tmp/hook_stat_complete.py << 'PYEOF'
 import re
@@ -426,7 +403,6 @@ PYEOF
   python3 /tmp/hook_stat_complete.py
 fi
 
-# --- reboot ---
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
   cat > /tmp/hook_reboot.py << 'PYEOF'
 import re
@@ -457,7 +433,6 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
-# --- setresuid ---
 if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
   cat > /tmp/hook_setresuid.py << 'PYEOF'
 import re
@@ -485,7 +460,6 @@ PYEOF
   python3 /tmp/hook_setresuid.py
 fi
 
-# --- sys_read ---
 if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
   cat > /tmp/hook_sys_read.py << 'PYEOF'
 import re
@@ -515,7 +489,6 @@ PYEOF
   python3 /tmp/hook_sys_read.py
 fi
 
-# --- input ---
 if ! grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
   cat > /tmp/hook_input.py << 'PYEOF'
 import re
@@ -556,7 +529,7 @@ fi
 
 echo "✅ Hooks ReSukiSU en place"
 
-# ==================== 4. INTÉGRATION SuSFS (JackA1ltman) ====================
+# ==================== 4. INTÉGRATION SuSFS ====================
 echo ""
 echo "=== Intégration SuSFS depuis JackA1ltman (mainline) ==="
 cd "$GITHUB_WORKSPACE"
@@ -576,7 +549,6 @@ echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
 echo "=== Application du patch SuSFS ==="
 patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
-# ---------- Corrections des .rej ----------
 echo "=== Corrections des rejets de patch ==="
 
 if [ -f "fs/proc/task_mmu.c.rej" ]; then
@@ -651,7 +623,6 @@ if find . -name "*.rej" -type f | grep -q .; then
 fi
 echo "✅ Patch SuSFS appliqué"
 
-# Copie fichiers SuSFS
 if [ -d "/tmp/jack_repo/Patches/fs" ]; then
     cp -rn /tmp/jack_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
@@ -661,7 +632,6 @@ fi
 
 find . -name "*.orig" -type f -delete 2>/dev/null || true
 
-# Makefile
 if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
     echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
     [ -f "fs/sus_su.c" ] && ! grep -q "sus_su.o" fs/Makefile && echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
