@@ -1,9 +1,7 @@
 #!/bin/bash
 set -e
-echo "=== Build ReSukiSU v4.2.0-rc1 (35061) + SuSFS pour kiev (SM8250) ==="
+echo "=== Build ReSukiSU (main) + SuSFS + patch seccomp 4.19 ==="
 df -h
-
-KSU_COMMIT="a9216b04e29cc973ddbf845342f2cbf85b47b460"
 
 # ==================== 0. ENVIRONNEMENT ====================
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -25,174 +23,45 @@ git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git \
 cd kernel_sources
 git log --oneline -1
 
-# ==================== 2. INTÉGRATION ReSukiSU ====================
-echo ""
-echo "=== Intégration ReSukiSU au commit $KSU_COMMIT ==="
+# ==================== 2. INTÉGRATION ReSukiSU (setup.sh comme build 6) ====================
+echo "=== Intégration ReSukiSU via setup.sh ==="
+rm -rf drivers/kernelsu kernelSU susfs4ksu || true
+curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-cd "$GITHUB_WORKSPACE"
-rm -rf /tmp/resukisu_repo
-git clone https://github.com/ReSukiSU/ReSukiSU.git /tmp/resukisu_repo
-cd /tmp/resukisu_repo
-git checkout "$KSU_COMMIT"
-echo "✅ ReSukiSU checkouté à $KSU_COMMIT"
-git log --oneline -1
-
-cd "$GITHUB_WORKSPACE/kernel_sources"
-rm -rf drivers/kernelsu kernelSU susfs4ksu
-cp -r /tmp/resukisu_repo/kernel drivers/kernelsu
-
-if [ -d "/tmp/resukisu_repo/kernel/include" ] && [ ! -d "drivers/kernelsu/include" ]; then
-    cp -r /tmp/resukisu_repo/kernel/include drivers/kernelsu/include
-    echo "→ Copie de drivers/kernelsu/include"
-fi
-
+# Vérification de base
 if [ ! -d "drivers/kernelsu" ]; then
-    echo "❌ drivers/kernelsu absent après copie"
+    echo "❌ drivers/kernelsu absent"
     exit 1
 fi
-echo "✅ drivers/kernelsu copié"
-ls drivers/kernelsu/ | head -10
+echo "✅ drivers/kernelsu présent"
 
-if [ -f "drivers/Makefile" ]; then
-    if ! grep -q "kernelsu" drivers/Makefile; then
-        echo "" >> drivers/Makefile
-        echo "obj-\$(CONFIG_KSU) += kernelsu/" >> drivers/Makefile
-        echo "→ Ajout de kernelsu/ dans drivers/Makefile"
-    fi
-fi
-
-if [ -f "drivers/Kconfig" ]; then
-    if ! grep -q "kernelsu/Kconfig" drivers/Kconfig; then
-        sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-        echo "→ Ajout de kernelsu/Kconfig dans drivers/Kconfig"
-    fi
-fi
-
-if [ ! -f "drivers/kernelsu/Kconfig" ]; then
-    echo "❌ drivers/kernelsu/Kconfig absent"
-    exit 1
-fi
-
-echo "✅ Intégration kernelsu terminée"
-
-# ==================== 2c. CONTOURNEMENT DU CHECK SUBMODULE ====================
+# ==================== 2e-bis. PATCH SECCOMP POUR KERNEL 4.19 (LE SEUL AJOUT) ====================
 echo ""
-echo "=== Contournement du check git submodule dans Kbuild ==="
+echo "=== Patch seccomp pour kernel 4.19 ==="
 
-if [ -f "drivers/kernelsu/Kbuild" ]; then
-    echo "→ Contenu avant :"
-    grep -n "You should use\|You should integrate" drivers/kernelsu/Kbuild || echo "(rien trouvé)"
+# Diagnostic
+echo "→ Recherche du check 5.10 :"
+grep -rn "LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)" drivers/kernelsu/ 2>/dev/null | head -20 || echo "(aucun)"
 
-    sed -i 's/\$(error You should use \$(REPO_NAME) as a git submodule instead of copying code directly)/\$(info Submodule check bypassed)/g' drivers/kernelsu/Kbuild
-    sed -i 's/\$(error You should use ReSukiSU as a git submodule instead of copying code directly)/\$(info Submodule check bypassed)/g' drivers/kernelsu/Kbuild
-    sed -i 's/\$(error You should integrate susfs in your kernel.)/\$(info SuSFS check bypassed)/g' drivers/kernelsu/Kbuild
-    sed -i 's/\$(error Unsupported hook method)/\$(info Unsupported hook method bypassed)/g' drivers/kernelsu/Kbuild
-    sed -i 's/\$(error TP hooks are incompatible with Non-GKI\/GKI 1.0 kernels.)/\$(info TP hooks bypassed)/g' drivers/kernelsu/Kbuild
+echo "→ Recherche seccomp :"
+grep -rn "ksu_seccomp_allow_cache\|disable_seccomp" drivers/kernelsu/ 2>/dev/null | head -10 || echo "(aucun)"
 
-    echo "→ Contenu après :"
-    grep -n "Submodule check bypassed\|SuSFS check bypassed" drivers/kernelsu/Kbuild || echo "(modifié)"
-fi
-
-if [ -f "drivers/kernelsu/Kbuild" ]; then
-    python3 - << 'PYEOF'
-import re
-with open('drivers/kernelsu/Kbuild', 'r') as f:
-    content = f.read()
-
-content = re.sub(r'^KSU_VERSION :=.*$', 'KSU_VERSION := 35061', content, flags=re.MULTILINE)
-content = re.sub(r'^KSU_LOCAL_VERSION :=.*$', 'KSU_LOCAL_VERSION := 4361', content, flags=re.MULTILINE)
-content = re.sub(r'^KSU_TAG_NAME\s*:=.*$', 'KSU_TAG_NAME := v4.2.0-rc1', content, flags=re.MULTILINE)
-content = re.sub(r'^KSU_COMMIT_SHA\s*:=.*$', 'KSU_COMMIT_SHA := a9216b04', content, flags=re.MULTILINE)
-content = re.sub(r'^KSU_BRANCH_NAME\s*:=.*$', 'KSU_BRANCH_NAME := main', content, flags=re.MULTILINE)
-content = re.sub(r'^KSU_VERSION_FULL\s*:=.*$', 'KSU_VERSION_FULL := v4.2.0-rc1-35061', content, flags=re.MULTILINE)
-content = content.replace(
-    '$(shell cd $(KSU_SRC); [ -f ../.git/shallow ] && $(GIT_BIN) fetch --unshallow)',
-    '# Git fetch désactivé'
-)
-with open('drivers/kernelsu/Kbuild', 'w') as f:
-    f.write(content)
-print("✅ Kbuild modifié : KSU_VERSION=35061")
-PYEOF
-    echo "✅ Version KSU forcée à 35061"
-fi
-
-echo "✅ Contournement submodule terminé"
-
-# ==================== 2d. COPIE DU DOSSIER UAPI ====================
-echo ""
-echo "=== Copie du dossier uapi ==="
-
-if [ -d "/tmp/resukisu_repo/uapi" ]; then
-    echo "→ Copie de /tmp/resukisu_repo/uapi"
-    mkdir -p "$GITHUB_WORKSPACE/kernel_sources/include/uapi"
-    cp -rn /tmp/resukisu_repo/uapi/* "$GITHUB_WORKSPACE/kernel_sources/include/uapi/" 2>/dev/null || true
-    echo "✅ uapi copié dans include/uapi/"
-    ls include/uapi/ | head -10
-else
-    echo "⚠️ /tmp/resukisu_repo/uapi n'existe pas"
-    find /tmp/resukisu_repo -name "app_profile.h" -path "*uapi*" 2>/dev/null
-fi
-
-if [ -d "/tmp/resukisu_repo/uapi" ]; then
-    mkdir -p "drivers/kernelsu/uapi"
-    cp -rn /tmp/resukisu_repo/uapi/* "drivers/kernelsu/uapi/" 2>/dev/null || true
-    echo "✅ uapi copié dans drivers/kernelsu/uapi/"
-fi
-
-if [ -f "drivers/kernelsu/Kbuild" ]; then
-    if ! grep -q "include/uapi" drivers/kernelsu/Kbuild; then
-        echo "→ Ajout des chemins d'include uapi dans Kbuild"
-        sed -i '/^ccflags-y += -I\$(srctree)\/security\/selinux/i ccflags-y += -I$(srctree)/include/uapi\nccflags-y += -I$(src)/uapi' drivers/kernelsu/Kbuild
-    fi
-fi
-
-echo "✅ Fix uapi terminé"
-
-# ==================== 2e. FIX DES SYMBOLES KSU MANQUANTS ====================
-echo ""
-echo "=== Fix des symboles KSU manquants (ksu_cred) ==="
-
-# 1. Créer le header avec les déclarations (TYPE CORRIGÉ : struct cred * SANS const)
-mkdir -p drivers/kernelsu/include
-cat > drivers/kernelsu/include/ksu_globals.h << 'KSU_H_EOF'
-#ifndef __KSU_GLOBALS_H
-#define __KSU_GLOBALS_H
-
-#include <linux/cred.h>
-#include <linux/types.h>
-
-#ifdef CONFIG_KSU
-extern struct cred *ksu_cred;
-extern u32 ksu_ksu_sid;
-extern u32 ksu_priv_app_sid;
-#endif
-
-#endif /* __KSU_GLOBALS_H */
-KSU_H_EOF
-
-echo "✅ ksu_globals.h créé (type struct cred * corrigé)"
-
-# 2. NE PAS définir ksu_cred (il est déjà dans core/init.c)
-echo "✅ ksu_cred déjà défini dans core/init.c (on n'y touche pas)"
-
-# 3. Ajouter l'include dans TOUS les .c du dossier kernelsu (SAUF ceux qui l'ont déjà)
-echo "→ Ajout de #include \"ksu_globals.h\" dans tous les .c"
-find drivers/kernelsu -name "*.c" | while read file; do
-    if ! grep -q "ksu_globals.h" "$file"; then
-        sed -i '1i #include "ksu_globals.h"' "$file"
-        echo "  ✅ $file"
-    fi
+# Patcher tous les fichiers avec le check 5.10
+PATCHED=0
+for FILE in $(grep -rl "LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)" drivers/kernelsu/ 2>/dev/null); do
+    sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)/#if 1 \/* Patched 4.19 *\//g' "$FILE"
+    echo "  ✅ Patché : $FILE"
+    PATCHED=$((PATCHED + 1))
 done
 
-# 4. Ajouter le chemin d'include dans Kbuild
-if [ -f "drivers/kernelsu/Kbuild" ]; then
-    if ! grep -q '\-I\$(src)/include' drivers/kernelsu/Kbuild; then
-        sed -i '/^ccflags-y += -I\$(src)/i ccflags-y += -I$(src)/include' drivers/kernelsu/Kbuild
-        echo "→ Ajout de -I\$(src)/include dans Kbuild"
-    fi
-fi
+# Aussi pour < 5.10.0
+for FILE in $(grep -rl "LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)" drivers/kernelsu/ 2>/dev/null); do
+    sed -i 's/#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)/#if 0 \/* Patched 4.19 *\//g' "$FILE"
+    echo "  ✅ Patché (< 5.10) : $FILE"
+    PATCHED=$((PATCHED + 1))
+done
 
-echo "✅ Fix des symboles KSU terminé"
+echo "✅ Patch seccomp terminé ($PATCHED fichiers)"
 
 # ==================== 3. HOOKS MANUELS ReSukiSU ====================
 echo ""
@@ -796,7 +665,7 @@ fi
 
 # ==================== 7b. COMPILATION KSUD ====================
 echo ""
-echo "=== Compilation de ksud (ReSukiSU @ $KSU_COMMIT) ==="
+echo "=== Compilation de ksud (ReSukiSU main) ==="
 cd "$GITHUB_WORKSPACE"
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -817,11 +686,7 @@ export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
-git clone https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
-cd "$GITHUB_WORKSPACE/ksud-src"
-git checkout "$KSU_COMMIT"
-echo "✅ ReSukiSU checkouté à $KSU_COMMIT pour ksud"
-
+git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
 cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
 
 mkdir -p .cargo
