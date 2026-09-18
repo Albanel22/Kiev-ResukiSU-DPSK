@@ -20,7 +20,7 @@ echo "=== Clonage du kernel Albanel22 lineage-23.2-tactile (épinglé à la rele
 git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git \
   -b lineage-23.2-tactile kernel_sources
 cd kernel_sources
-KERNEL_COMMIT=$(git rev-list -n 1 --before="2026-08-18 03:29:00" HEAD)
+KERNEL_COMMIT=$(git rev-list -n 1 --before="2026-08-17 23:59:59" HEAD)
 echo "Commit kernel_sources épinglé : $KERNEL_COMMIT"
 git checkout "$KERNEL_COMMIT"
 git log --oneline -1
@@ -30,7 +30,7 @@ echo "=== Intégration ReSukiSU (épinglée à la release MOTOROLA du 18 août 2
 rm -rf drivers/kernelsu kernelSU susfs4ksu KernelSU || true
 rm -rf /tmp/resukisu_pin
 git clone https://github.com/ReSukiSU/ReSukiSU.git /tmp/resukisu_pin
-RESUKISU_COMMIT=$(cd /tmp/resukisu_pin && git rev-list -n 1 --before="2026-08-18 03:29:00" main)
+RESUKISU_COMMIT=$(cd /tmp/resukisu_pin && git rev-list -n 1 --before="2026-08-17 23:59:59" main)
 echo "Commit ReSukiSU épinglé : $RESUKISU_COMMIT"
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s -- "$RESUKISU_COMMIT"
 
@@ -342,7 +342,7 @@ echo "=== Intégration SuSFS depuis JackA1ltman/NonGKI_Kernel_Build_2nd (mainlin
 cd "$GITHUB_WORKSPACE"
 rm -rf /tmp/jack_repo
 git clone --branch mainline https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
-JACK_COMMIT=$(cd /tmp/jack_repo && git rev-list -n 1 --before="2026-08-18 03:29:00" mainline)
+JACK_COMMIT=$(cd /tmp/jack_repo && git rev-list -n 1 --before="2026-08-17 23:59:59" mainline)
 echo "Commit JackA1ltman/NonGKI_Kernel_Build_2nd épinglé : $JACK_COMMIT"
 (cd /tmp/jack_repo && git checkout "$JACK_COMMIT")
 
