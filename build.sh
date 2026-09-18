@@ -1,8 +1,9 @@
 #!/bin/bash
 set -e
-echo "=== Début du build ReSukiSU + SuSFS (JackA1ltman/NonGKI_Kernel_Build_2nd, mainline) pour kiev (SM8250) ==="
+echo "=== Build ReSukiSU + SuSFS (JackA1ltman mainline) pour kiev (SM8250) ==="
 df -h
 
+# ==================== 0. ENVIRONNEMENT ====================
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 sudo apt-get clean
 
@@ -16,13 +17,10 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 cd $GITHUB_WORKSPACE
 
 # ==================== 1. CLONAGE DU NOYAU ====================
-echo "=== Clonage du kernel Albanel22 lineage-23.2-tactile (épinglé à la release MOTOROLA du 18 août 2026, 03:29 UTC) ==="
+echo "=== Clonage du kernel Albanel22 lineage-23.2-tactile (HEAD du fork, non épinglé — source de vérité pour le tactile) ==="
 git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git \
-  -b lineage-23.2-tactile kernel_sources
+  -b lineage-23.2-tactile --depth=1 kernel_sources
 cd kernel_sources
-KERNEL_COMMIT=$(git rev-list -n 1 --before="2026-08-17 23:59:59" HEAD)
-echo "Commit kernel_sources épinglé : $KERNEL_COMMIT"
-git checkout "$KERNEL_COMMIT"
 git log --oneline -1
 
 # ==================== 2. INTÉGRATION ReSukiSU ====================
@@ -336,7 +334,7 @@ fi
 
 echo "✅ Hooks ReSukiSU en place"
 
-# ==================== 4. INTÉGRATION SuSFS (JackA1ltman, branche mainline) ====================
+# ==================== 4. INTÉGRATION SuSFS (JackA1ltman) ====================
 echo ""
 echo "=== Intégration SuSFS depuis JackA1ltman/NonGKI_Kernel_Build_2nd (mainline) ==="
 cd "$GITHUB_WORKSPACE"
@@ -359,8 +357,8 @@ echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
 echo "=== Application du patch SuSFS ==="
 patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
-# ---------- Corrections des .rej (logique réelle, pas de stubs) ----------
-echo "=== Corrections des rejets de patch (logique réelle du patch, pas de stub) ==="
+# ---------- Corrections des .rej ----------
+echo "=== Corrections des rejets de patch ==="
 
 if [ -f "fs/proc/task_mmu.c.rej" ]; then
     echo "⚠️ Rejet détecté dans task_mmu.c. Correction automatique..."
@@ -486,7 +484,6 @@ with open('fs/namespace.c', 'w') as f:
     f.write(content)
 PYEOF
 
-
 # Vérification stricte : aucun .rej ne doit persister
 if find . -name "*.rej" -type f | grep -q .; then
     echo "❌ ÉCHEC CRITIQUE : Des rejets de patch SuSFS persistent."
@@ -495,7 +492,7 @@ if find . -name "*.rej" -type f | grep -q .; then
 fi
 echo "✅ Patch SuSFS appliqué avec succès (aucun rejet)."
 
-# Copie des fichiers source/headers SuSFS fournis par JackA1ltman
+# Copie des fichiers source/headers SuSFS
 if [ -d "/tmp/jack_repo/Patches/fs" ]; then
     cp -rn /tmp/jack_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
@@ -513,13 +510,10 @@ fi
 
 # Correction variable 'vma' non utilisée
 if [ -f "fs/proc/task_mmu.c" ]; then
-    echo "🔧 Correction de la variable 'vma' non utilisée dans task_mmu.c..."
     sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
 fi
 
-# Symboles susfs_is_current_ksu_domain / susfs_ksu_sid / susfs_priv_app_sid
-# (uniquement si vraiment absents après le patch réel — pas un stub par défaut,
-# c'est un filet de sécurité minimal identique à l'implémentation SuSFS d'origine)
+# Symboles susfs
 if [ -f "fs/susfs.c" ] && ! grep -q "susfs_is_current_ksu_domain" fs/susfs.c; then
     echo "⚠️ susfs_is_current_ksu_domain absent après le patch réel — ajout de l'implémentation standard SuSFS"
     cat >> fs/susfs.c << 'SUSFS_EOF'
@@ -541,7 +535,7 @@ EXPORT_SYMBOL(susfs_priv_app_sid);
 SUSFS_EOF
 fi
 
-echo "✅ SuSFS (JackA1ltman mainline) intégré, sans stub à return-false fabriqué"
+echo "✅ SuSFS (JackA1ltman mainline) intégré"
 
 # ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
@@ -586,13 +580,11 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# --- Vérification stricte : seccomp doit être bien désactivé après olddefconfig ---
-
 # ==================== 6. PATCHES FINAUX ====================
 echo "=== Patch signatures modules + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
 # ==================== 7. COMPILATION ====================
 echo "=== Compilation finale ==="
@@ -607,32 +599,219 @@ else
   exit 1
 fi
 
-# ==================== 8. REPACK (sans ksud) ====================
+# ==================== 7b. COMPILATION KSUD (ReSukiSU) ====================
+echo "=== Compilation de ksud (ReSukiSU) ==="
+cd "$GITHUB_WORKSPACE"
+
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+
+rustup toolchain install nightly
+rustup default nightly
+rustup target add aarch64-linux-android
+
+wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+unzip -q android-ndk-r26d-linux.zip
+
+export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
+export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
+export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
+export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
+
+rm -rf "$GITHUB_WORKSPACE/ksud-src"
+echo "=== Clonage de ksud (ReSukiSU) sur main actuelle ==="
+git clone https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
+cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
+
+mkdir -p .cargo
+cat > .cargo/config.toml <<EOF
+[target.aarch64-linux-android]
+linker = "$AARCH64_CLANG_PATH"
+
+[env]
+CC_aarch64_linux_android = "$AARCH64_CLANG_PATH"
+CXX_aarch64_linux_android = "$AARCH64_CLANGXX_PATH"
+AR_aarch64_linux_android = "$AR_PATH"
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
+EOF
+
+echo "=== Résolution des dépendances (main actuelle) et compilation de ksud ==="
+export CARGO_NET_GIT_FETCH_WITH_CLI=true
+cargo +nightly build --release --target aarch64-linux-android
+
+echo "=== Recherche du binaire ksud dans tout le repo cloné ==="
+find "$GITHUB_WORKSPACE/ksud-src" -type f -name "ksud" 2>/dev/null
+KSUD_BINARY=$(find "$GITHUB_WORKSPACE/ksud-src" -type f -name "ksud" -executable 2>/dev/null | head -1)
+
+if [ -z "$KSUD_BINARY" ]; then
+    echo "❌ ksud introuvable après recherche automatique"
+    ls -la "$GITHUB_WORKSPACE/ksud-src/"
+    exit 1
+fi
+
+echo "✅ ksud trouvé ici : $KSUD_BINARY"
+cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
+chmod 755 "$GITHUB_WORKSPACE/ksud"
+echo "✅ ksud (ReSukiSU) compilé"
+
+cd "$GITHUB_WORKSPACE"
+
+# ==================== 8. REPACK (avec ksud) ====================
 echo "=== Téléchargement des images stock ==="
 cd $GITHUB_WORKSPACE
 
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
-  echo "Fallback mkbootimg..."
+curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || true
+curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
+
+if [ ! -f "boot-stock.img" ]; then
+  echo "Fallback mkbootimg (boot.img, kernel seul)..."
   mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img \
     --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 \
     --ramdisk_offset 0x01000000 --tags_offset 0x00000100 \
     --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
-}
+fi
 
-curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
+wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
+unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
+mkdir -p repack
+mv lib/x86_64/libmagiskboot.so repack/magiskboot
+chmod +x repack/magiskboot
+rm -rf Magisk-v27.0.apk lib/
+
+RAMDISK_LOCATION=""
 
 if [ -f "boot-stock.img" ]; then
-  echo "=== Repack avec magiskboot ==="
-  mkdir -p repack
+  echo "=== Unpack de boot.img pour vérifier où vit le ramdisk ==="
   cp boot-stock.img repack/boot.img
-  wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
-  unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
-  mv lib/x86_64/libmagiskboot.so repack/magiskboot
-  chmod +x repack/magiskboot
-  rm -rf Magisk-v27.0.apk lib/
   cd repack
   ./magiskboot unpack boot.img
   cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
+
+  if [ -f "ramdisk.cpio" ] && [ -s "ramdisk.cpio" ]; then
+    echo "✅ Ramdisk trouvé dans boot.img (device non-GKI classique, kernel+ramdisk réunis)"
+    RAMDISK_LOCATION="boot"
+  else
+    echo "⚠️ Pas de ramdisk exploitable dans boot.img — on va chercher côté init_boot.img"
+  fi
+  cd ..
+fi
+
+if [ "$RAMDISK_LOCATION" != "boot" ]; then
+  curl -fLo init_boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/init_boot.img" 2>/dev/null || true
+  if [ -f "init_boot-stock.img" ]; then
+    echo "=== Unpack de init_boot.img pour vérifier le ramdisk ==="
+    rm -rf repack_initboot
+    mkdir -p repack_initboot
+    cp init_boot-stock.img repack_initboot/init_boot.img
+    cp repack/magiskboot repack_initboot/magiskboot
+    cd repack_initboot
+    ./magiskboot unpack init_boot.img
+    if [ -f "ramdisk.cpio" ] && [ -s "ramdisk.cpio" ]; then
+      echo "✅ Ramdisk trouvé dans init_boot.img (device split GKI-style)"
+      RAMDISK_LOCATION="init_boot"
+    fi
+    cd ..
+  fi
+fi
+
+if [ -z "$RAMDISK_LOCATION" ]; then
+  echo "❌ Aucun ramdisk exploitable trouvé — vérifier manuellement le layout de partitions"
+  exit 1
+fi
+
+if [ "$RAMDISK_LOCATION" = "boot" ]; then
+  WORKDIR="repack"
+  IMG_NAME="boot.img"
+  OUT_NAME="final_boot.img"
+else
+  WORKDIR="repack_initboot"
+  IMG_NAME="init_boot.img"
+  OUT_NAME="final_init_boot.img"
+fi
+
+cd "$WORKDIR"
+
+echo "=== Installation de ksud dans le ramdisk (chemin canonique /data/adb/ksu/bin/ksud, dans $IMG_NAME) ==="
+./magiskboot cpio ramdisk.cpio \
+  "mkdir 0755 data" \
+  "mkdir 0755 data/adb" \
+  "mkdir 0755 data/adb/ksu" \
+  "mkdir 0755 data/adb/ksu/bin" \
+  "add 0755 data/adb/ksu/bin/ksud $GITHUB_WORKSPACE/ksud"
+
+cp "$GITHUB_WORKSPACE/ksud" local_su_binary
+chmod 755 local_su_binary
+./magiskboot cpio ramdisk.cpio \
+  "mkdir 0755 system" \
+  "mkdir 0755 system/bin" \
+  "add 06755 system/bin/su ./local_su_binary"
+rm -f local_su_binary
+
+# --- CRITIQUE : ajout du déclencheur init.rc (multi-chemin) ---
+echo "=== Ajout du déclencheur init.rc pour lancer ksud au boot ==="
+
+# Chercher init.rc aux différents emplacements possibles (Android 10+ split init)
+INIT_RC_PATHS=(
+  "first_stage_ramdisk/init.rc"
+  "system/etc/init/hw/init.rc"
+  "init.rc"
+)
+
+INIT_RC_FOUND=""
+for CANDIDATE in "${INIT_RC_PATHS[@]}"; do
+  echo "=== Tentative d'extraction de $CANDIDATE ==="
+  ./magiskboot cpio ramdisk.cpio "extract $CANDIDATE /tmp/init.rc" 2>/dev/null && \
+    [ -f /tmp/init.rc ] && [ -s /tmp/init.rc ] && {
+      INIT_RC_FOUND="$CANDIDATE"
+      echo "✅ init.rc trouvé à : $CANDIDATE ($(wc -l < /tmp/init.rc) lignes)"
+      break
+    }
+  rm -f /tmp/init.rc
+done
+
+# Si aucun init.rc trouvé, on en crée un nouveau à un chemin sûr
+if [ -z "$INIT_RC_FOUND" ]; then
+  echo "⚠️ Aucun init.rc existant trouvé dans le ramdisk"
+  echo "→ Création d'un nouveau init.rc à 'first_stage_ramdisk/init.rc'"
+  INIT_RC_FOUND="first_stage_ramdisk/init.rc"
+  cat > /tmp/init.rc << 'RCEOF'
+# init.rc créé par ReSukiSU build
+RCEOF
+fi
+
+# Ajouter le bloc service ksud
+if ! grep -q "service ksud" /tmp/init.rc; then
+  cat >> /tmp/init.rc << 'RCEOF'
+
+# --- ReSukiSU ksud daemon ---
+on post-fs-data
+    start ksud
+
+service ksud /data/adb/ksu/bin/ksud daemon
+    user root
+    group root
+    seclabel u:r:su:s0
+    disabled
+    oneshot
+RCEOF
+  echo "✅ Bloc service ksud ajouté à init.rc"
+else
+  echo "✅ Bloc service ksud déjà présent dans init.rc"
+fi
+
+# Réinjecter le fichier modifié
+./magiskboot cpio ramdisk.cpio "add 0750 $INIT_RC_FOUND /tmp/init.rc"
+echo "✅ init.rc réinjecté à : $INIT_RC_FOUND"
+
+./magiskboot repack "$IMG_NAME" "new-$IMG_NAME"
+mv "new-$IMG_NAME" "../$OUT_NAME"
+cd ..
+
+if [ "$RAMDISK_LOCATION" = "init_boot" ] && [ -f "boot-stock.img" ]; then
+  echo "=== Repack de boot.img (kernel seul, le ramdisk/ksud est dans init_boot.img) ==="
+  cd repack
   ./magiskboot repack boot.img new-boot.img
   mv new-boot.img ../final_boot.img
   cd ..
@@ -642,8 +821,10 @@ fi
 echo "=== Copie vers output ==="
 mkdir -p output
 cp final_boot.img output/ReSukiSU-SusFS-boot.img
+[ -f final_init_boot.img ] && cp final_init_boot.img output/ReSukiSU-SusFS-init_boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
+cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
 
 echo "=== BUILD TERMINÉ ==="
 ls -lh output/
