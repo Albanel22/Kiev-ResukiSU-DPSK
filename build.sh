@@ -20,7 +20,7 @@ echo "=== Clonage du kernel Albanel22 lineage-23.2-tactile (épinglé à la rele
 git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git \
   -b lineage-23.2-tactile kernel_sources
 cd kernel_sources
-KERNEL_COMMIT=$(git rev-list -n 1 --before="2026-08-18 03:29:00" HEAD)
+KERNEL_COMMIT=$(git rev-list -n 1 --before="2026-08-17 23:59:59" HEAD)
 echo "Commit kernel_sources épinglé : $KERNEL_COMMIT"
 git checkout "$KERNEL_COMMIT"
 git log --oneline -1
@@ -30,7 +30,7 @@ echo "=== Intégration ReSukiSU (épinglée à la release MOTOROLA du 18 août 2
 rm -rf drivers/kernelsu kernelSU susfs4ksu KernelSU || true
 rm -rf /tmp/resukisu_pin
 git clone https://github.com/ReSukiSU/ReSukiSU.git /tmp/resukisu_pin
-RESUKISU_COMMIT=$(cd /tmp/resukisu_pin && git rev-list -n 1 --before="2026-08-18 03:29:00" main)
+RESUKISU_COMMIT=$(cd /tmp/resukisu_pin && git rev-list -n 1 --before="2026-08-17 23:59:59" main)
 echo "Commit ReSukiSU épinglé : $RESUKISU_COMMIT"
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s -- "$RESUKISU_COMMIT"
 
@@ -342,7 +342,7 @@ echo "=== Intégration SuSFS depuis JackA1ltman/NonGKI_Kernel_Build_2nd (mainlin
 cd "$GITHUB_WORKSPACE"
 rm -rf /tmp/jack_repo
 git clone --branch mainline https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
-JACK_COMMIT=$(cd /tmp/jack_repo && git rev-list -n 1 --before="2026-08-18 03:29:00" mainline)
+JACK_COMMIT=$(cd /tmp/jack_repo && git rev-list -n 1 --before="2026-08-17 23:59:59" mainline)
 echo "Commit JackA1ltman/NonGKI_Kernel_Build_2nd épinglé : $JACK_COMMIT"
 (cd /tmp/jack_repo && git checkout "$JACK_COMMIT")
 
@@ -633,6 +633,34 @@ git clone https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
 cd "$GITHUB_WORKSPACE/ksud-src"
 echo "=== Épinglage de ksud au même commit ReSukiSU que le driver kernel : $RESUKISU_COMMIT ==="
 git checkout "$RESUKISU_COMMIT"
+
+# --- Fix : l'org GitHub Kernel-SU (hébergeant Kernel-SU/adb_client) a été suspendue/flaggée par GitHub,
+# --- ce qui casse le fetch git à tout commit ReSukiSU antérieur à leur propre fix upstream (PR #412, 14 sept).
+# --- On bascule adb_client vers la version publiée sur crates.io (cocool97/adb_client, dépôt d'origine).
+echo "=== Remplacement de Kernel-SU/adb_client (org suspendue) par adb_client crates.io (cocool97) ==="
+python3 - << 'PYEOF'
+import re
+path = "userspace/ksud/Cargo.toml"
+with open(path) as f:
+    content = f.read()
+orig = content
+pattern_table = re.compile(r'^adb_client\s*=\s*\{[^}]*\}\s*$', re.MULTILINE)
+pattern_simple = re.compile(r'^adb_client\s*=\s*".*"\s*$', re.MULTILINE)
+if pattern_table.search(content):
+    content = pattern_table.sub('adb_client = "3.2.3"', content)
+    print("✅ adb_client (dépendance git en table) remplacé par la version crates.io 3.2.3")
+elif pattern_simple.search(content):
+    content = pattern_simple.sub('adb_client = "3.2.3"', content)
+    print("✅ adb_client (déjà en version simple) forcé sur crates.io 3.2.3")
+else:
+    print("⚠️ Ligne 'adb_client' introuvable dans Cargo.toml — vérifier manuellement le fichier")
+if content != orig:
+    with open(path, "w") as f:
+        f.write(content)
+PYEOF
+rm -f userspace/ksud/Cargo.lock
+echo "⚠️ Cargo.lock supprimé pour ce fichier uniquement (source de dépendance changée : git -> crates.io) — cargo va re-resoudre juste cette branche de dépendances"
+
 cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
 
 mkdir -p .cargo
@@ -647,11 +675,16 @@ AR_aarch64_linux_android = "$AR_PATH"
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
 EOF
 
-echo "=== Suppression du Cargo.lock pour re-resoudre les dependances (revision figee introuvable) ==="
-rm -f Cargo.lock
+echo "=== Conservation du Cargo.lock du commit ReSukiSU épinglé (il pointe déjà vers des révisions valides à cette date) ==="
+if [ ! -f Cargo.lock ]; then
+  echo "⚠️ Aucun Cargo.lock trouvé dans ce commit, cargo va devoir résoudre les dépendances"
+fi
 
 export CARGO_NET_GIT_FETCH_WITH_CLI=true
-cargo +nightly build --release --target aarch64-linux-android
+if ! cargo +nightly build --release --target aarch64-linux-android --locked; then
+  echo "⚠️ Build --locked a échoué (dépendance de Cargo.lock inaccessible) — tentative sans --locked en dernier recours"
+  cargo +nightly build --release --target aarch64-linux-android
+fi
 
 echo "=== Recherche du binaire ksud dans tout le repo cloné ==="
 find "$GITHUB_WORKSPACE/ksud-src" -type f -name "ksud" 2>/dev/null
