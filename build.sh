@@ -766,11 +766,22 @@ if not os.path.exists(path):
     sys.exit(1)
 
 with open(path, "r") as f:
-    lines = f.readlines()
+    content = f.read()
 
+# 1. CAS SPÉCIFIQUE : ksu_props (prop-rs-android)
+# Non disponible sur crates.io, on remplace l'URL par le fork public ReSukiSU
+content, n1 = re.subn(
+    r'https://github\.com/Kernel-SU/ksu_props(\.git)?',
+    r'https://github.com/ReSukiSU/ksu_props',
+    content
+)
+if n1 > 0:
+    print(f"✅ {n1} URL(s) git Kernel-SU/ksu_props remplacée(s) par le fork ReSukiSU/ksu_props")
+
+lines = content.splitlines(keepends=True)
 out = []
 
-# Mapping des dépôts Kernel-SU vers leurs versions crates.io stables
+# 2. Mapping des dépôts Kernel-SU vers leurs versions crates.io stables
 crates_map = {
     "adb_client": "3.2.3",
     "java-properties": "2.0.0",
@@ -781,10 +792,10 @@ i = 0
 while i < len(lines):
     line = lines[i]
 
-    # Détecte une ligne contenant un lien git vers Kernel-SU
+    # Détecte une ligne contenant un lien git vers Kernel-SU (qui n'a pas été remplacé par ReSukiSU)
     if "Kernel-SU" in line and "git" in line:
         
-        # Cas 1: Table inline (ex: adb_client = { git = "..." })
+        # Cas A: Table inline (ex: adb_client = { git = "..." })
         m = re.match(r'^([ \t]*)([a-zA-Z0-9_-]+)\s*=\s*\{', line)
         if m:
             indent, dep_name = m.groups()
@@ -812,11 +823,11 @@ while i < len(lines):
                     i += 1
                     continue
 
-            out.append(line)
+            out.append(block)
             i += 1
             continue
 
-        # Cas 2: Section dédiée (ex: [dependencies.java-properties])
+        # Cas B: Section dédiée (ex: [dependencies.java-properties])
         m = re.match(r'^\[dependencies\.([a-zA-Z0-9_-]+)\]', line)
         if m:
             dep_name = m.group(1)
@@ -853,8 +864,10 @@ while i < len(lines):
     out.append(line)
     i += 1
 
+content = "".join(out)
+
 with open(path, "w") as f:
-    f.writelines(out)
+    f.write(content)
 
 print("✅ Cargo.toml mis à jour")
 PYEOF
