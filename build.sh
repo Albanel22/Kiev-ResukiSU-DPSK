@@ -16,16 +16,23 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 cd $GITHUB_WORKSPACE
 
 # ==================== 1. CLONAGE DU NOYAU ====================
-echo "=== Clonage du kernel Albanel22 lineage-23.2-tactile ==="
+echo "=== Clonage du kernel Albanel22 lineage-23.2-tactile (épinglé à la release MOTOROLA du 18 août 2026, 03:29 UTC) ==="
 git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git \
-  -b lineage-23.2-tactile --depth=1 kernel_sources
+  -b lineage-23.2-tactile kernel_sources
 cd kernel_sources
+KERNEL_COMMIT=$(git rev-list -n 1 --before="2026-08-18 03:29:00" HEAD)
+echo "Commit kernel_sources épinglé : $KERNEL_COMMIT"
+git checkout "$KERNEL_COMMIT"
 git log --oneline -1
 
 # ==================== 2. INTÉGRATION ReSukiSU ====================
-echo "=== Intégration ReSukiSU ==="
-rm -rf drivers/kernelsu kernelSU susfs4ksu || true
-curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
+echo "=== Intégration ReSukiSU (épinglée à la release MOTOROLA du 18 août 2026, 03:29 UTC) ==="
+rm -rf drivers/kernelsu kernelSU susfs4ksu KernelSU || true
+rm -rf /tmp/resukisu_pin
+git clone https://github.com/ReSukiSU/ReSukiSU.git /tmp/resukisu_pin
+RESUKISU_COMMIT=$(cd /tmp/resukisu_pin && git rev-list -n 1 --before="2026-08-18 03:29:00" main)
+echo "Commit ReSukiSU épinglé : $RESUKISU_COMMIT"
+curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s -- "$RESUKISU_COMMIT"
 
 # ==================== 3. HOOKS MANUELS ReSukiSU ====================
 echo "=== Hooks ReSukiSU ==="
@@ -334,7 +341,10 @@ echo ""
 echo "=== Intégration SuSFS depuis JackA1ltman/NonGKI_Kernel_Build_2nd (mainline) ==="
 cd "$GITHUB_WORKSPACE"
 rm -rf /tmp/jack_repo
-git clone --depth=1 --branch mainline https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
+git clone --branch mainline https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
+JACK_COMMIT=$(cd /tmp/jack_repo && git rev-list -n 1 --before="2026-08-18 03:29:00" mainline)
+echo "Commit JackA1ltman/NonGKI_Kernel_Build_2nd épinglé : $JACK_COMMIT"
+(cd /tmp/jack_repo && git checkout "$JACK_COMMIT")
 
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
@@ -557,11 +567,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "# CONFIG_COMPAT_VDSO is not set"
   echo "# CONFIG_VDSO32 is not set"
   echo ""
-  echo "# --- Fix seccomp : CONFIG_SECCOMP doit rester ON (struct seccomp.mode/.filter requis par drivers/kernelsu/policy/app_profile.c),"
-  echo "# --- seul CONFIG_SECCOMP_FILTER (filtrage BPF utilisé par Android pour bloquer le syscall du driver KSU) est désactivé ---"
-  echo "CONFIG_SECCOMP=y"
-  echo "# CONFIG_SECCOMP_FILTER is not set"
-  echo ""
   echo "CONFIG_KSU_SUSFS=y"
   echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
   echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
@@ -582,19 +587,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
 # --- Vérification stricte : seccomp doit être bien désactivé après olddefconfig ---
-if ! grep -q "^CONFIG_SECCOMP=y" out/.config; then
-  echo "❌ CONFIG_SECCOMP n'est pas activé après olddefconfig (le driver KSU ne compilera pas sans) — forçage direct avec scripts/config"
-  ./scripts/config --file out/.config --enable CONFIG_SECCOMP
-  ./scripts/config --file out/.config --disable CONFIG_SECCOMP_FILTER
-  make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
-fi
-if grep -q "^CONFIG_SECCOMP_FILTER=y" out/.config; then
-  echo "❌ CONFIG_SECCOMP_FILTER est resté activé après olddefconfig (probablement forcé par le defconfig fusionné) — forçage direct avec scripts/config"
-  ./scripts/config --file out/.config --disable CONFIG_SECCOMP_FILTER
-  make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
-fi
-grep -E "^CONFIG_SECCOMP" out/.config
-echo "✅ attendu : CONFIG_SECCOMP=y et CONFIG_SECCOMP_FILTER absent/non défini"
 
 # ==================== 6. PATCHES FINAUX ====================
 echo "=== Patch signatures modules + tactile ==="
@@ -637,7 +629,10 @@ export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
-git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
+git clone https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
+cd "$GITHUB_WORKSPACE/ksud-src"
+echo "=== Épinglage de ksud au même commit ReSukiSU que le driver kernel : $RESUKISU_COMMIT ==="
+git checkout "$RESUKISU_COMMIT"
 cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
 
 mkdir -p .cargo
