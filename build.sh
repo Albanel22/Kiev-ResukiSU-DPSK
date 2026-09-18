@@ -17,15 +17,13 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 cd "$GITHUB_WORKSPACE"
 
 # ==================== 1. CLONAGE DU NOYAU ====================
-echo "=== Clonage du kernel Albanel22 lineage-23.2-tactile (épinglé à la release MOTOROLA du 18 août 2026, 03:29 UTC) ==="
+echo "=== Clonage du kernel Albanel22 lineage-23.2-tactile (Dernier commit de la branche, sans épinglage pour garder le tactile) ==="
 git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git \
   -b lineage-23.2-tactile kernel_sources
 
 cd kernel_sources
 
-KERNEL_COMMIT=$(git rev-list -n 1 --before="2026-08-17 23:59:59" HEAD)
-echo "Commit kernel_sources épinglé : $KERNEL_COMMIT"
-git checkout "$KERNEL_COMMIT"
+echo "Commit kernel_sources actuel (tip de la branche) :"
 git log --oneline -1
 
 # ==================== 2. INTÉGRATION ReSukiSU ====================
@@ -620,8 +618,6 @@ if [ -f "fs/proc/task_mmu.c" ]; then
 fi
 
 # Symboles susfs_is_current_ksu_domain / susfs_ksu_sid / susfs_priv_app_sid
-# (uniquement si vraiment absents après le patch réel — pas un stub par défaut,
-# c'est un filet de sécurité minimal identique à l'implémentation SuSFS d'origine)
 if [ -f "fs/susfs.c" ] && ! grep -q "susfs_is_current_ksu_domain" fs/susfs.c; then
     echo "⚠️ susfs_is_current_ksu_domain absent après le patch réel — ajout de l'implémentation standard SuSFS"
     cat >> fs/susfs.c << 'SUSFS_EOF'
@@ -690,8 +686,6 @@ make O=out LLVM=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COM
 
 make O=out LLVM=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" olddefconfig
 
-# --- Vérification stricte : seccomp doit être bien désactivé après olddefconfig ---
-
 # ==================== 6. PATCHES FINAUX ====================
 echo "=== Patch signatures modules + tactile ==="
 
@@ -718,15 +712,14 @@ echo "=== Compilation de ksud (ReSukiSU) ==="
 
 cd "$GITHUB_WORKSPACE"
 
-# Si un token GitHub est disponible, on configure Git pour éviter les invites d'authentification
-# sur d'éventuelles dépendances git restantes.
+# Configuration Git pour éviter les invites
 if [ -n "${GITHUB_TOKEN:-}" ]; then
   git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
 fi
 
-# En CI, on ne veut jamais rester bloqué sur une invite username/password.
 export GIT_TERMINAL_PROMPT=0
 export CARGO_NET_GIT_FETCH_WITH_CLI=true
+export CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 
 # Installation Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -756,108 +749,128 @@ echo "=== Épinglage de ksud au même commit ReSukiSU que le driver kernel : $RE
 git checkout "$RESUKISU_COMMIT"
 
 # ----------------------------------------------------------------------
-# CORRECTION CRITIQUE :
-# L'organisation / dépôt Kernel-SU/adb_client peut être inaccessible,
-# supprimé, privé ou signalé, ce qui provoque :
-#
-# fatal: could not read Username for 'https://github.com': No such device or address
-# error: failed to get `adb_client` as a dependency...
-#
-# On remplace donc la dépendance git par la crate publiée sur crates.io.
-# Si l'API diffère, il faudra ajuster ADB_CLIENT_VERSION ou utiliser un fork accessible.
+# CORRECTION CRITIQUE & ROBUSTE :
+# Remplacement de TOUTES les dépendances git Kernel-SU par crates.io.
+# Gère à la fois adb_client et java-properties (et d'autres si ajoutés).
 # ----------------------------------------------------------------------
-export ADB_CLIENT_VERSION="${ADB_CLIENT_VERSION:-3.2.3}"
-
-echo "=== Patch Cargo.toml : remplacement de adb_client git -> crates.io ($ADB_CLIENT_VERSION) ==="
+echo "=== Patch Cargo.toml : Remplacement des dépendances Kernel-SU par crates.io ==="
 
 python3 - << 'PYEOF'
 import re
-import os
 import sys
+import os
 
 path = "userspace/ksud/Cargo.toml"
-
 if not os.path.exists(path):
-    print(f"❌ Fichier introuvable : {path}", file=sys.stderr)
+    print(f"❌ {path} introuvable")
     sys.exit(1)
 
-with open(path, "r", encoding="utf-8") as f:
-    original_content = f.read()
+with open(path, "r") as f:
+    lines = f.readlines()
 
-content = original_content
-version = os.environ.get("ADB_CLIENT_VERSION", "3.2.3")
-changed = False
+out = []
 
-# Cas 1 : dépendance sous forme de table, éventalement multiligne :
-# adb_client = {
-#     git = "https://github.com/Kernel-SU/adb_client",
-#     branch = "..."
-# }
-pattern_table = re.compile(
-    r'^([ \t]*)adb_client\s*=\s*\{(?:[^{}]|\{[^{}]*\})*\}[ \t]*$',
-    re.MULTILINE
-)
+# Mapping des dépôts Kernel-SU vers leurs versions crates.io stables
+crates_map = {
+    "adb_client": "3.2.3",
+    "java-properties": "2.0.0",
+    "java_properties": "2.0.0"
+}
 
-# Cas 2 : dépendance simple :
-# adb_client = "..."
-pattern_simple = re.compile(
-    r'^([ \t]*)adb_client\s*=\s*"[^"]*"[ \t]*$',
-    re.MULTILINE
-)
+i = 0
+while i < len(lines):
+    line = lines[i]
 
-if pattern_table.search(content):
-    content = pattern_table.sub(
-        lambda m: f'{m.group(1)}adb_client = "{version}"',
-        content,
-        count=1
-    )
-    changed = True
-    print(f"✅ adb_client (table git) remplacé par crates.io {version}")
+    # Détecte une ligne contenant un lien git vers Kernel-SU
+    if "Kernel-SU" in line and "git" in line:
+        
+        # Cas 1: Table inline (ex: adb_client = { git = "..." })
+        m = re.match(r'^([ \t]*)([a-zA-Z0-9_-]+)\s*=\s*\{', line)
+        if m:
+            indent, dep_name = m.groups()
+            block = line
+            while '}' not in block and i + 1 < len(lines):
+                i += 1
+                block += lines[i]
 
-elif pattern_simple.search(content):
-    content = pattern_simple.sub(
-        lambda m: f'{m.group(1)}adb_client = "{version}"',
-        content,
-        count=1
-    )
-    changed = True
-    print(f"✅ adb_client (version simple) forcé sur crates.io {version}")
+            repo_match = re.search(r'Kernel-SU/([a-zA-Z0-9_-]+)', block)
+            if repo_match:
+                repo = repo_match.group(1).replace('.git', '')
+                repo_norm = repo.replace('-', '_')
+                dep_norm = dep_name.replace('-', '_')
 
-else:
-    # Secours : si la ligne n'existe pas, on l'ajoute dans [dependencies].
-    lines = content.splitlines()
-    inserted = False
+                version = None
+                for k, v in crates_map.items():
+                    if k.replace('-', '_') == repo_norm or k.replace('-', '_') == dep_norm:
+                        version = v
+                        break
 
-    for i, line in enumerate(lines):
-        if line.strip() == "[dependencies]":
-            lines.insert(i + 1, f'adb_client = "{version}"')
-            inserted = True
-            break
+                if version:
+                    new_line = f'{indent}{dep_name} = "{version}"\n'
+                    out.append(new_line)
+                    print(f"✅ {dep_name} (git Kernel-SU/{repo}) -> crates.io {version}")
+                    i += 1
+                    continue
 
-    if inserted:
-        content = "\n".join(lines)
-        if original_content.endswith("\n"):
-            content += "\n"
-        changed = True
-        print(f"⚠️ adb_client introuvable, ajouté dans [dependencies] : {version}")
-    else:
-        print("⚠️ adb_client introuvable dans Cargo.toml et [dependencies] non trouvé.")
-        print("   On continue sans modification, mais le build peut échouer si la dépendance est requise.")
+            out.append(line)
+            i += 1
+            continue
 
-if changed:
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    print("✅ Cargo.toml mis à jour.")
-else:
-    print("ℹ️ Cargo.toml inchangé.")
+        # Cas 2: Section dédiée (ex: [dependencies.java-properties])
+        m = re.match(r'^\[dependencies\.([a-zA-Z0-9_-]+)\]', line)
+        if m:
+            dep_name = m.group(1)
+            block = [line]
+            j = i + 1
+            while j < len(lines) and not lines[j].strip().startswith('['):
+                block.append(lines[j])
+                j += 1
+
+            block_text = "".join(block)
+            repo_match = re.search(r'Kernel-SU/([a-zA-Z0-9_-]+)', block_text)
+            if repo_match:
+                repo = repo_match.group(1).replace('.git', '')
+                repo_norm = repo.replace('-', '_')
+                dep_norm = dep_name.replace('-', '_')
+
+                version = None
+                for k, v in crates_map.items():
+                    if k.replace('-', '_') == repo_norm or k.replace('-', '_') == dep_norm:
+                        version = v
+                        break
+
+                if version:
+                    new_block = f'[dependencies]\n{dep_name} = "{version}"\n'
+                    out.append(new_block)
+                    print(f"✅ {dep_name} (section git Kernel-SU/{repo}) -> crates.io {version}")
+                    i = j
+                    continue
+
+            out.extend(block)
+            i = j
+            continue
+
+    out.append(line)
+    i += 1
+
+with open(path, "w") as f:
+    f.writelines(out)
+
+print("✅ Cargo.toml mis à jour")
 PYEOF
 
-echo "=== Vérification de la ligne adb_client après patch ==="
-grep -n "adb_client" userspace/ksud/Cargo.toml || true
+echo "=== Vérification après patch ==="
+grep -nE '^(adb_client|java-properties|java_properties)\s*=' userspace/ksud/Cargo.toml || true
 
-# On supprime le Cargo.lock car il peut encore pointer vers l'ancienne source git inaccessible.
-rm -f userspace/ksud/Cargo.lock
-echo "✅ Cargo.lock supprimé pour forcer une résolution propre depuis crates.io."
+if grep -Eq 'git[[:space:]]*=[[:space:]]*"https://github.com/Kernel-SU' userspace/ksud/Cargo.toml; then
+  echo "❌ Il reste une dépendance git Kernel-SU dans Cargo.toml :"
+  grep -nE 'git[[:space:]]*=[[:space:]]*"https://github.com/Kernel-SU' userspace/ksud/Cargo.toml
+  exit 1
+fi
+
+# Supprime tous les Cargo.lock du repo ksud-src
+find "$GITHUB_WORKSPACE/ksud-src" -type f -name Cargo.lock -delete
+echo "✅ Cargo.lock supprimé(s) pour forcer une résolution propre depuis crates.io."
 
 cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
 
@@ -875,11 +888,21 @@ BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarc
 EOF
 
 echo "=== Lancement du build cargo ksud ==="
-echo "Note : --locked est volontairement désactivé car la source de adb_client a été changée."
+echo "Note : --locked est volontairement désactivé car les sources de dépendances ont été changées."
 
-if ! cargo +nightly build --release --target aarch64-linux-android; then
+KSUD_BUILD_LOG="$GITHUB_WORKSPACE/ksud_cargo_build.log"
+
+if ! (set -o pipefail; cargo +nightly build --release --target aarch64-linux-android 2>&1 | tee "$KSUD_BUILD_LOG"); then
+  if grep -Eq "could not read Username|failed to get .* as a dependency|unable to update https://github.com/Kernel-SU" "$KSUD_BUILD_LOG"; then
+    echo "⚠️ Échec git détecté, nouvelle tentative avec CARGO_NET_GIT_FETCH_WITH_CLI=false"
+    if ! (set -o pipefail; CARGO_NET_GIT_FETCH_WITH_CLI=false cargo +nightly build --release --target aarch64-linux-android 2>&1 | tee -a "$KSUD_BUILD_LOG"); then
+      echo "❌ Échec du build cargo de ksud"
+      exit 1
+    fi
+  else
     echo "❌ Échec du build cargo de ksud"
     exit 1
+  fi
 fi
 
 echo "=== Recherche du binaire ksud ==="
@@ -897,14 +920,14 @@ do
 done
 
 if [ -z "$KSUD_BINARY" ]; then
-  KSUD_BINARY=$(find "$GITHUB_WORKSPACE/ksud-src" -type f -name "ksud" 2>/dev/null | head -1)
+  KSUD_BINARY=$(find "$GITHUB_WORKSPACE/ksud-src" -type f -name ksud 2>/dev/null | head -1)
 fi
 
 if [ -z "$KSUD_BINARY" ]; then
-    echo "❌ ksud introuvable après build"
-    echo "=== Diagnostic : contenu probable de target/ ==="
-    find "$GITHUB_WORKSPACE/ksud-src" -path "*/target/*" -type f -name "ksud*" 2>/dev/null | head -20
-    exit 1
+  echo "❌ ksud introuvable après build"
+  echo "=== Diagnostic : fichiers ksud* dans target/ ==="
+  find "$GITHUB_WORKSPACE/ksud-src" -path '*/target/*' -type f -name 'ksud*' 2>/dev/null | head -20
+  exit 1
 fi
 
 echo "✅ ksud trouvé ici : $KSUD_BINARY"
@@ -949,7 +972,6 @@ if [ -f "boot-stock.img" ]; then
   ./magiskboot unpack boot.img
   cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
 
-  # --- Chemin canonique attendu par ksud lui-même : /data/adb/ksu/bin/ksud ---
   echo "=== Installation de ksud dans le ramdisk (chemin canonique /data/adb/ksu/bin/ksud) ==="
 
   ./magiskboot cpio ramdisk.cpio \
@@ -969,7 +991,6 @@ if [ -f "boot-stock.img" ]; then
 
   rm -f local_su_binary
 
-  # --- CRITIQUE : sans ceci, rien n'exécute jamais ksud au boot (AUTO_INITRC_HOOK est désactivé) ---
   echo "=== Ajout du déclencheur init.rc pour lancer ksud au boot ==="
 
   ./magiskboot cpio ramdisk.cpio "extract init.rc /tmp/init.rc"
