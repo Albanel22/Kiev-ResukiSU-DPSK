@@ -749,146 +749,175 @@ echo "=== Épinglage de ksud au même commit ReSukiSU que le driver kernel : $RE
 git checkout "$RESUKISU_COMMIT"
 
 # ----------------------------------------------------------------------
-# CORRECTION CRITIQUE & ROBUSTE :
-# Remplacement de TOUTES les dépendances git Kernel-SU par crates.io.
-# Gère à la fois adb_client et java-properties (et d'autres si ajoutés).
+# CORRECTION CRITIQUE & ÉLÉGANTE :
+# Utilisation de [patch] dans .cargo/config.toml pour rediriger les URLs Git
+# inaccessibles (Kernel-SU) vers les forks publics (ReSukiSU).
+# Cette méthode est officielle, propre, et s'applique à tout le workspace.
 # ----------------------------------------------------------------------
-echo "=== Patch Cargo.toml : Remplacement des dépendances Kernel-SU par crates.io ==="
+echo "=== Configuration des redirections Git via [patch] Cargo (méthode élégante) ==="
+
+mkdir -p "$HOME/.cargo"
+cat > "$HOME/.cargo/config.toml" << 'CARGO_CONFIG_EOF'
+# Redirection élégante des forks Git inaccessibles (Kernel-SU -> ReSukiSU)
+# Cargo utilise [patch] pour remplacer globalement les sources Git cassées
+
+[patch."https://github.com/Kernel-SU/rustix.git"]
+rustix = { git = "https://github.com/ReSukiSU/rustix.git", rev = "4a53fbc7cb7a07cabe87125cc21dbc27db316259" }
+
+[patch."https://github.com/Kernel-SU/rustix"]
+rustix = { git = "https://github.com/ReSukiSU/rustix.git", rev = "4a53fbc7cb7a07cabe87125cc21dbc27db316259" }
+
+[patch."https://github.com/Kernel-SU/ksu_props.git"]
+prop-rs-android = { git = "https://github.com/ReSukiSU/ksu_props.git" }
+prop-rs = { git = "https://github.com/ReSukiSU/ksu_props.git" }
+
+[patch."https://github.com/Kernel-SU/ksu_props"]
+prop-rs-android = { git = "https://github.com/ReSukiSU/ksu_props.git" }
+prop-rs = { git = "https://github.com/ReSukiSU/ksu_props.git" }
+CARGO_CONFIG_EOF
+
+echo "✅ Configuration [patch] Cargo créée dans $HOME/.cargo/config.toml"
+
+# Remplacement de adb_client et java-properties par crates.io (via Python)
+echo "=== Remplacement de adb_client et java-properties par crates.io ==="
 
 python3 - << 'PYEOF'
-import re
-import sys
 import os
+import re
 
-path = "userspace/ksud/Cargo.toml"
-if not os.path.exists(path):
-    print(f"❌ {path} introuvable")
-    sys.exit(1)
+ROOT = "."
+SKIP_DIRS = {".git", "target", ".cargo", "out"}
 
-with open(path, "r") as f:
-    content = f.read()
-
-# 1. CAS SPÉCIFIQUE : ksu_props (prop-rs-android)
-# Non disponible sur crates.io, on remplace l'URL par le fork public ReSukiSU
-content, n1 = re.subn(
-    r'https://github\.com/Kernel-SU/ksu_props(\.git)?',
-    r'https://github.com/ReSukiSU/ksu_props',
-    content
-)
-if n1 > 0:
-    print(f"✅ {n1} URL(s) git Kernel-SU/ksu_props remplacée(s) par le fork ReSukiSU/ksu_props")
-
-lines = content.splitlines(keepends=True)
-out = []
-
-# 2. Mapping des dépôts Kernel-SU vers leurs versions crates.io stables
-crates_map = {
+crates_replacements = {
     "adb_client": "3.2.3",
     "java-properties": "2.0.0",
-    "java_properties": "2.0.0"
+    "java_properties": "2.0.0",
 }
 
-i = 0
-while i < len(lines):
-    line = lines[i]
+def norm(name):
+    return name.replace("-", "_").replace(".", "_").lower()
 
-    # Détecte une ligne contenant un lien git vers Kernel-SU (qui n'a pas été remplacé par ReSukiSU)
-    if "Kernel-SU" in line and "git" in line:
-        
-        # Cas A: Table inline (ex: adb_client = { git = "..." })
-        m = re.match(r'^([ \t]*)([a-zA-Z0-9_-]+)\s*=\s*\{', line)
-        if m:
-            indent, dep_name = m.groups()
-            block = line
-            while '}' not in block and i + 1 < len(lines):
-                i += 1
-                block += lines[i]
+def match_crate(dep_name, repo_name):
+    dn = norm(dep_name)
+    rn = norm(repo_name)
+    for crate, version in crates_replacements.items():
+        cn = norm(crate)
+        if cn == dn or cn == rn:
+            return crate, version
+    return None
 
-            repo_match = re.search(r'Kernel-SU/([a-zA-Z0-9_-]+)', block)
-            if repo_match:
-                repo = repo_match.group(1).replace('.git', '')
-                repo_norm = repo.replace('-', '_')
-                dep_norm = dep_name.replace('-', '_')
+def repo_from_block(block):
+    m = re.search(r'github\.com/Kernel-SU/([A-Za-z0-9_.-]+)', block)
+    if not m: return None
+    repo = m.group(1)
+    if repo.endswith(".git"): repo = repo[:-4]
+    return repo
 
-                version = None
-                for k, v in crates_map.items():
-                    if k.replace('-', '_') == repo_norm or k.replace('-', '_') == dep_norm:
-                        version = v
-                        break
+def clean_inline_table(table, dep_name, crate, version):
+    for key in ("git", "branch", "tag", "rev", "version", "package"):
+        table = re.sub(rf',?[ \t]*{key}[ \t]*=[ \t]*"[^"]*"', "", table)
+    table = re.sub(r'\{[ \t]*,', "{", table)
+    table = re.sub(r',[ \t]*\}', " }", table)
+    table = re.sub(r',[ \t]*,', ",", table)
+    attrs = f'version = "{version}"'
+    if norm(dep_name) != norm(crate):
+        attrs = f'package = "{crate}", {attrs}'
+    table = re.sub(r'\{[ \t]*', "{ " + attrs + ", ", table, count=1)
+    table = re.sub(r',[ \t]*\}', " }", table)
+    return table
 
-                if version:
-                    new_line = f'{indent}{dep_name} = "{version}"\n'
-                    out.append(new_line)
-                    print(f"✅ {dep_name} (git Kernel-SU/{repo}) -> crates.io {version}")
-                    i += 1
-                    continue
+def patch_file(path):
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+    original = content
+    lines = content.splitlines(keepends=True)
+    out = []
+    i = 0
 
-            out.append(block)
-            i += 1
-            continue
+    while i < len(lines):
+        line = lines[i]
+        if "Kernel-SU" in line and "git" in line:
+            m_inline = re.match(r'^([ \t]*)([A-Za-z0-9_.-]+)[ \t]*=[ \t]*\{', line)
+            if m_inline:
+                indent = m_inline.group(1)
+                dep_name = m_inline.group(2)
+                block = ""
+                depth = 0
+                j = i
+                while j < len(lines):
+                    block += lines[j]
+                    depth += lines[j].count("{") - lines[j].count("}")
+                    j += 1
+                    if depth <= 0: break
+                repo = repo_from_block(block)
+                if repo:
+                    matched = match_crate(dep_name, repo)
+                    if matched:
+                        crate, version = matched
+                        new_block = clean_inline_table(block, dep_name, crate, version)
+                        if not new_block.endswith("\n"): new_block += "\n"
+                        out.append(new_block)
+                        print(f"✅ [{path}] {dep_name} -> crates.io {crate} {version}")
+                        i = j
+                        continue
+                out.append(block)
+                i = j
+                continue
 
-        # Cas B: Section dédiée (ex: [dependencies.java-properties])
-        m = re.match(r'^\[dependencies\.([a-zA-Z0-9_-]+)\]', line)
-        if m:
-            dep_name = m.group(1)
-            block = [line]
-            j = i + 1
-            while j < len(lines) and not lines[j].strip().startswith('['):
-                block.append(lines[j])
-                j += 1
+            m_section = re.match(r'^\[[^\]\n]*dependencies\.([A-Za-z0-9_.-]+)\]\s*$', line)
+            if m_section:
+                dep_name = m_section.group(1)
+                block = [line]
+                j = i + 1
+                while j < len(lines) and not lines[j].lstrip().startswith("["):
+                    block.append(lines[j])
+                    j += 1
+                block_text = "".join(block)
+                repo = repo_from_block(block_text)
+                if repo:
+                    matched = match_crate(dep_name, repo)
+                    if matched:
+                        crate, version = matched
+                        new_block = line
+                        if norm(dep_name) != norm(crate):
+                            new_block += f'package = "{crate}"\n'
+                        new_block += f'version = "{version}"\n'
+                        for bl in block[1:]:
+                            if re.match(r'^[ \t]*(git|branch|tag|rev|version|package)[ \t]*=', bl): continue
+                            new_block += bl
+                        out.append(new_block)
+                        print(f"✅ [{path}] {dep_name} (section) -> crates.io {crate} {version}")
+                        i = j
+                        continue
+                out.extend(block)
+                i = j
+                continue
+        out.append(line)
+        i += 1
 
-            block_text = "".join(block)
-            repo_match = re.search(r'Kernel-SU/([a-zA-Z0-9_-]+)', block_text)
-            if repo_match:
-                repo = repo_match.group(1).replace('.git', '')
-                repo_norm = repo.replace('-', '_')
-                dep_norm = dep_name.replace('-', '_')
+    content = "".join(out)
+    if content != original:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
 
-                version = None
-                for k, v in crates_map.items():
-                    if k.replace('-', '_') == repo_norm or k.replace('-', '_') == dep_norm:
-                        version = v
-                        break
-
-                if version:
-                    new_block = f'[dependencies]\n{dep_name} = "{version}"\n'
-                    out.append(new_block)
-                    print(f"✅ {dep_name} (section git Kernel-SU/{repo}) -> crates.io {version}")
-                    i = j
-                    continue
-
-            out.extend(block)
-            i = j
-            continue
-
-    out.append(line)
-    i += 1
-
-content = "".join(out)
-
-with open(path, "w") as f:
-    f.write(content)
-
-print("✅ Cargo.toml mis à jour")
+count = 0
+for dirpath, dirnames, filenames in os.walk(ROOT):
+    dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+    for filename in filenames:
+        if filename == "Cargo.toml":
+            patch_file(os.path.join(dirpath, filename))
+            count += 1
+print(f"✅ {count} fichier(s) Cargo.toml analysé(s) pour crates.io")
 PYEOF
 
-echo "=== Vérification après patch ==="
-grep -nE '^(adb_client|java-properties|java_properties)\s*=' userspace/ksud/Cargo.toml || true
-
-if grep -Eq 'git[[:space:]]*=[[:space:]]*"https://github.com/Kernel-SU' userspace/ksud/Cargo.toml; then
-  echo "❌ Il reste une dépendance git Kernel-SU dans Cargo.toml :"
-  grep -nE 'git[[:space:]]*=[[:space:]]*"https://github.com/Kernel-SU' userspace/ksud/Cargo.toml
-  exit 1
-fi
-
-# Supprime tous les Cargo.lock du repo ksud-src
+echo "=== Purge des anciens locks et du cache Cargo ==="
 find "$GITHUB_WORKSPACE/ksud-src" -type f -name Cargo.lock -delete
-echo "✅ Cargo.lock supprimé(s) pour forcer une résolution propre depuis crates.io."
+rm -rf ~/.cargo/git/db/*Kernel-SU* ~/.cargo/git/checkouts/*Kernel-SU*
+echo "✅ Locks et cache Cargo purgés."
 
 cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
 
 mkdir -p .cargo
-
 cat > .cargo/config.toml <<EOF
 [target.aarch64-linux-android]
 linker = "$AARCH64_CLANG_PATH"
@@ -901,13 +930,11 @@ BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarc
 EOF
 
 echo "=== Lancement du build cargo ksud ==="
-echo "Note : --locked est volontairement désactivé car les sources de dépendances ont été changées."
-
 KSUD_BUILD_LOG="$GITHUB_WORKSPACE/ksud_cargo_build.log"
 
 if ! (set -o pipefail; cargo +nightly build --release --target aarch64-linux-android 2>&1 | tee "$KSUD_BUILD_LOG"); then
-  if grep -Eq "could not read Username|failed to get .* as a dependency|unable to update https://github.com/Kernel-SU" "$KSUD_BUILD_LOG"; then
-    echo "⚠️ Échec git détecté, nouvelle tentative avec CARGO_NET_GIT_FETCH_WITH_CLI=false"
+  if grep -Eq "could not read Username|failed to authenticate|unable to update" "$KSUD_BUILD_LOG"; then
+    echo "⚠️ Échec git/auth détecté, tentative avec CARGO_NET_GIT_FETCH_WITH_CLI=false"
     if ! (set -o pipefail; CARGO_NET_GIT_FETCH_WITH_CLI=false cargo +nightly build --release --target aarch64-linux-android 2>&1 | tee -a "$KSUD_BUILD_LOG"); then
       echo "❌ Échec du build cargo de ksud"
       exit 1
@@ -919,9 +946,7 @@ if ! (set -o pipefail; cargo +nightly build --release --target aarch64-linux-and
 fi
 
 echo "=== Recherche du binaire ksud ==="
-
 KSUD_BINARY=""
-
 for candidate in \
   "$GITHUB_WORKSPACE/ksud-src/userspace/ksud/target/aarch64-linux-android/release/ksud" \
   "$GITHUB_WORKSPACE/ksud-src/target/aarch64-linux-android/release/ksud"
@@ -938,16 +963,13 @@ fi
 
 if [ -z "$KSUD_BINARY" ]; then
   echo "❌ ksud introuvable après build"
-  echo "=== Diagnostic : fichiers ksud* dans target/ ==="
   find "$GITHUB_WORKSPACE/ksud-src" -path '*/target/*' -type f -name 'ksud*' 2>/dev/null | head -20
   exit 1
 fi
 
 echo "✅ ksud trouvé ici : $KSUD_BINARY"
-
 cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
-
 echo "✅ ksud (ReSukiSU) compilé"
 
 cd "$GITHUB_WORKSPACE"
