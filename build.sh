@@ -839,15 +839,26 @@ if [ -f "boot-stock.img" ]; then
 
   echo "=== Ajout du déclencheur init.rc pour lancer ksud au boot ==="
 
-  ./magiskboot cpio ramdisk.cpio "extract init.rc /tmp/init.rc"
+  # --- CORRECTION : Le ramdisk stock Motorola n'a pas toujours d'init.rc à la racine. ---
+  # On ajoute '|| true' pour éviter que 'set -e' ne tue le script si magiskboot échoue à l'extraire.
+  rm -f /tmp/init.rc
+  ./magiskboot cpio ramdisk.cpio "extract init.rc /tmp/init.rc" 2>/dev/null || true
 
   if [ ! -f /tmp/init.rc ]; then
-    echo "❌ init.rc introuvable dans le ramdisk"
-    exit 1
-  fi
+    echo "⚠️ init.rc absent du ramdisk stock. Création d'un init.rc sur mesure pour ksud..."
+    cat > /tmp/init.rc << 'RCEOF'
+on post-fs-data
+    start ksud
 
-  if ! grep -q "service ksud" /tmp/init.rc; then
-    cat >> /tmp/init.rc << 'RCEOF'
+service ksud /data/adb/ksu/bin/ksud daemon
+    user root
+    seclabel u:r:su:s0
+    disabled
+    oneshot
+RCEOF
+  else
+    if ! grep -q "service ksud" /tmp/init.rc; then
+      cat >> /tmp/init.rc << 'RCEOF'
 
 on post-fs-data
     start ksud
@@ -858,12 +869,13 @@ service ksud /data/adb/ksu/bin/ksud daemon
     disabled
     oneshot
 RCEOF
-
-    echo "✅ Bloc service ksud ajouté à init.rc"
-  else
-    echo "✅ Bloc service ksud déjà présent dans init.rc"
+      echo "✅ Bloc service ksud ajouté à l'init.rc existant"
+    else
+      echo "✅ Bloc service ksud déjà présent dans init.rc"
+    fi
   fi
 
+  # On injecte le fichier (qu'il soit nouveau ou modifié) dans le ramdisk
   ./magiskboot cpio ramdisk.cpio "add 0750 init.rc /tmp/init.rc"
 
   ./magiskboot repack boot.img new-boot.img
