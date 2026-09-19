@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Build ReSukiSU + SuSFS - VARIANTE SuSFS Inline Hook natif (pas de CONFIG_KSU_MANUAL_HOOK, pas de patches sed) ==="
+echo "=== Build ReSukiSU + SuSFS - VARIANTE SuSFS Inline Hook natif (pas de CONFIG_KSU_MANUAL_HOOK) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -16,14 +16,14 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 cd $GITHUB_WORKSPACE
 
 # ==================== 1. CLONAGE DU NOYAU ====================
-echo "=== Clonage du kernel Albanel22 lineage-23.2-tactile (HEAD du fork, non épinglé — source de vérité pour le tactile) ==="
+echo "=== Clonage du kernel Albanel22 lineage-23.2-tactile ==="
 git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git \
   -b lineage-23.2-tactile --depth=1 kernel_sources
 cd kernel_sources
 git log --oneline -1
 
 # ==================== 2. INTÉGRATION ReSukiSU ====================
-echo "=== Intégration ReSukiSU (épinglée à la release MOTOROLA du 18 août 2026, 03:29 UTC) ==="
+echo "=== Intégration ReSukiSU (épinglée) ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu KernelSU || true
 rm -rf /tmp/resukisu_pin
 git clone https://github.com/ReSukiSU/ReSukiSU.git /tmp/resukisu_pin
@@ -31,21 +31,21 @@ RESUKISU_COMMIT=$(cd /tmp/resukisu_pin && git rev-list -n 1 --before="2026-08-17
 echo "Commit ReSukiSU épinglé : $RESUKISU_COMMIT"
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s -- "$RESUKISU_COMMIT"
 
-# ==================== 4. INTÉGRATION SuSFS (JackA1ltman, branche mainline) ====================
+# ==================== 4. INTÉGRATION SuSFS ====================
 echo ""
 echo "=== Intégration SuSFS depuis JackA1ltman/NonGKI_Kernel_Build_2nd (mainline) ==="
 cd "$GITHUB_WORKSPACE"
 rm -rf /tmp/jack_repo
 git clone --branch mainline https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
 JACK_COMMIT=$(cd /tmp/jack_repo && git rev-list -n 1 --before="2026-08-17 23:59:59" mainline)
-echo "Commit JackA1ltman/NonGKI_Kernel_Build_2nd épinglé : $JACK_COMMIT"
+echo "Commit JackA1ltman épinglé : $JACK_COMMIT"
 (cd /tmp/jack_repo && git checkout "$JACK_COMMIT")
 
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
 SUSFS_PATCH="/tmp/jack_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 if [ ! -f "$SUSFS_PATCH" ]; then
-    echo "❌ Patch SuSFS 4.19 non trouvé dans la branche mainline !"
+    echo "❌ Patch SuSFS 4.19 non trouvé !"
     find /tmp/jack_repo/Patches -name "*.patch" 2>/dev/null | sort
     exit 1
 fi
@@ -54,11 +54,11 @@ echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
 echo "=== Application du patch SuSFS ==="
 patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
-# ---------- Corrections des .rej (logique réelle, pas de stubs) ----------
-echo "=== Corrections des rejets de patch (logique réelle du patch, pas de stub) ==="
+# ---------- Corrections des .rej ----------
+echo "=== Corrections des rejets de patch ==="
 
 if [ -f "fs/proc/task_mmu.c.rej" ]; then
-    echo "⚠️ Rejet détecté dans task_mmu.c. Correction automatique..."
+    echo "⚠️ Rejet task_mmu.c — correction..."
     python3 - << 'PYEOF'
 import re, os
 file_path = 'fs/proc/task_mmu.c'
@@ -75,7 +75,7 @@ PYEOF
 fi
 
 if [ -f "fs/namespace.c.rej" ] && grep -q "vfs_kern_mount" "fs/namespace.c.rej"; then
-    echo "⚠️ Rejet détecté dans namespace.c. Correction automatique..."
+    echo "⚠️ Rejet namespace.c — correction..."
     python3 - << 'PYEOF'
 import re, os
 file_path = 'fs/namespace.c'
@@ -101,13 +101,11 @@ PYEOF
     rm -f fs/namespace.c.rej
 fi
 
-echo "=== Correction inconditionnelle des déclarations SuSFS dans fs/super.c ==="
+echo "=== Correction déclarations SuSFS dans fs/super.c ==="
 python3 - << 'PYEOF'
 import re
-
 with open('fs/super.c', 'r') as f:
     content = f.read()
-
 if 'extern bool susfs_is_current_ksu_domain' not in content:
     decl = """
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
@@ -120,21 +118,18 @@ extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
 #endif /* CONFIG_KSU_SUSFS_SUS_MOUNT */
 """
     content = re.sub(r'(#include\s+"internal\.h"\s*\n)', r'\1' + decl, content, count=1)
-    print("✅ Déclarations forcées injectées dans fs/super.c")
+    print("✅ Déclarations injectées dans fs/super.c")
 else:
-    print("✅ Déclarations déjà présentes dans fs/super.c")
-
+    print("✅ Déclarations déjà présentes")
 with open('fs/super.c', 'w') as f:
     f.write(content)
 PYEOF
-
 rm -f fs/super.c.rej 2>/dev/null || true
 
-echo "=== Correction inconditionnelle de l'inclusion susfs_def.h dans fs/stat.c ==="
+echo "=== Correction inclusion susfs_def.h dans fs/stat.c ==="
 python3 - << 'PYEOF'
 with open('fs/stat.c', 'r') as f:
     content = f.read()
-
 if '#include <linux/susfs_def.h>' not in content:
     content = content.replace(
         '#include <linux/uaccess.h>',
@@ -143,21 +138,17 @@ if '#include <linux/susfs_def.h>' not in content:
     )
     print("✅ susfs_def.h injecté dans fs/stat.c")
 else:
-    print("✅ susfs_def.h déjà présent dans fs/stat.c")
-
+    print("✅ susfs_def.h déjà présent")
 with open('fs/stat.c', 'w') as f:
     f.write(content)
 PYEOF
 
-echo "=== Correction inconditionnelle et robuste de fs/namespace.c (CL_COPY_MNT_NS) ==="
+echo "=== Correction fs/namespace.c (CL_COPY_MNT_NS) ==="
 python3 - << 'PYEOF'
 import re
-
 with open('fs/namespace.c', 'r') as f:
     content = f.read()
-
 content = re.sub(r'^\s*n(?=#ifdef|#endif|#include|#define|extern)', '', content, flags=re.MULTILINE)
-
 if 'define CL_COPY_MNT_NS' not in content:
     decl = '''
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
@@ -171,33 +162,30 @@ extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
     if match:
         insert_pos = match.end()
         content = content[:insert_pos] + decl + content[insert_pos:]
-        print("✅ CL_COPY_MNT_NS et déclarations injectées dans fs/namespace.c")
+        print("✅ CL_COPY_MNT_NS injecté")
     else:
-        print("❌ Aucun #include trouvé dans fs/namespace.c — injection impossible")
+        print("❌ Aucun #include trouvé")
 else:
-    print("✅ CL_COPY_MNT_NS déjà présent dans fs/namespace.c")
-
+    print("✅ CL_COPY_MNT_NS déjà présent")
 with open('fs/namespace.c', 'w') as f:
     f.write(content)
 PYEOF
 
-
-# Vérification stricte : aucun .rej ne doit persister
+# Vérification stricte .rej
 if find . -name "*.rej" -type f | grep -q .; then
-    echo "❌ ÉCHEC CRITIQUE : Des rejets de patch SuSFS persistent."
+    echo "❌ Des rejets de patch SuSFS persistent."
     find . -name "*.rej" -type f -exec echo "=== {} ===" \; -exec cat {} \;
     exit 1
 fi
-echo "✅ Patch SuSFS appliqué avec succès (aucun rejet)."
+echo "✅ Patch SuSFS appliqué avec succès."
 
-# Copie des fichiers source/headers SuSFS fournis par JackA1ltman
+# Copie fichiers SuSFS
 if [ -d "/tmp/jack_repo/Patches/fs" ]; then
     cp -rn /tmp/jack_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
 if [ -d "/tmp/jack_repo/Patches/include/linux" ]; then
     cp -rn /tmp/jack_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
-
 find . -name "*.orig" -type f -delete 2>/dev/null || true
 
 # Makefile
@@ -206,17 +194,14 @@ if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
     [ -f "fs/sus_su.c" ] && ! grep -q "sus_su.o" fs/Makefile && echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
 fi
 
-# Correction variable 'vma' non utilisée
+# Correction variable vma
 if [ -f "fs/proc/task_mmu.c" ]; then
-    echo "🔧 Correction de la variable 'vma' non utilisée dans task_mmu.c..."
     sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
 fi
 
-# Symboles susfs_is_current_ksu_domain / susfs_ksu_sid / susfs_priv_app_sid
-# (uniquement si vraiment absents après le patch réel — pas un stub par défaut,
-# c'est un filet de sécurité minimal identique à l'implémentation SuSFS d'origine)
+# Filet de sécurité symboles
 if [ -f "fs/susfs.c" ] && ! grep -q "susfs_is_current_ksu_domain" fs/susfs.c; then
-    echo "⚠️ susfs_is_current_ksu_domain absent après le patch réel — ajout de l'implémentation standard SuSFS"
+    echo "⚠️ Ajout implémentation minimale susfs_is_current_ksu_domain"
     cat >> fs/susfs.c << 'SUSFS_EOF'
 
 #ifdef CONFIG_KSU_SUSFS
@@ -236,21 +221,20 @@ EXPORT_SYMBOL(susfs_priv_app_sid);
 SUSFS_EOF
 fi
 
-echo "✅ SuSFS (JackA1ltman mainline) intégré, sans stub à return-false fabriqué"
+echo "✅ SuSFS intégré"
 
-# ==================== 3b. HOOK setresuid OBLIGATOIRE (Inline Hook) ====================
-echo "=== Injection robuste du hook ksu_handle_setresuid ==="
+# ==================== 3b. HOOK setresuid — VERSION FONCTIONNELLE ====================
+echo "=== Injection FONCTIONNELLE du hook ksu_handle_setresuid ==="
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
 python3 - << 'PYEOF'
-import re
+import re, sys
 
 with open('kernel/sys.c', 'r') as f:
     src = f.read()
 
-# --- 1. Déclaration ---
+# 1. Déclaration
 if 'extern int ksu_handle_setresuid' not in src:
-    # On l'ajoute juste avant la définition de setresuid
     src = re.sub(
         r'(SYSCALL_DEFINE3\s*\(\s*setresuid\b)',
         r'''#ifdef CONFIG_KSU
@@ -265,59 +249,41 @@ extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
 else:
     print("✅ Déclaration déjà présente")
 
-# --- 2. Appel (uniquement dans setresuid) ---
+# 2. Appel au début de setresuid (position fonctionnelle)
+HOOK = '''
+#ifdef CONFIG_KSU_SUSFS
+	/* Appel le plus tôt possible — comportement SuSFS / ReSukiSU */
+	if (ksu_handle_setresuid(ruid, euid, suid)) {
+		pr_info("ksu_handle_setresuid returned non-zero\\n");
+	}
+#endif
+'''
+
 if 'ksu_handle_setresuid(ruid, euid, suid)' not in src:
-    # On cherche le bloc setresuid complet et on injecte après les 3 checks uid_valid
     pattern = re.compile(
-        r'(SYSCALL_DEFINE3\s*\(\s*setresuid\s*,\s*uid_t\s*,\s*ruid\s*,\s*uid_t\s*,\s*euid\s*,\s*uid_t\s*,\s*suid\s*\)\s*\{.*?'
-        r'if\s*\(\s*\(suid\s*!=\s*\(uid_t\)\s*-1\)\s*&&\s*!uid_valid\s*\(\s*ksuid\s*\)\s*\)\s*\n\s*return\s*-EINVAL\s*;)',
+        r'(SYSCALL_DEFINE3\s*\(\s*setresuid\s*,\s*uid_t\s*,\s*ruid\s*,\s*uid_t\s*,\s*euid\s*,\s*uid_t\s*,\s*suid\s*\)\s*\{)',
         re.DOTALL
     )
-
-    def inject(m):
-        return m.group(1) + '''
-#ifdef CONFIG_KSU_SUSFS
-	if (ksu_handle_setresuid(ruid, euid, suid)) {
-		pr_info("Something wrong with ksu_handle_setresuid()\\n");
-	}
-#endif'''
-
-    new_src, n = pattern.subn(inject, src, count=1)
-
+    new_src, n = pattern.subn(r'\1' + HOOK, src, count=1)
     if n == 0:
-        # Fallback très simple et sûr : juste après l'ouverture de la fonction
-        new_src = re.sub(
-            r'(SYSCALL_DEFINE3\s*\(\s*setresuid\s*,\s*uid_t\s*,\s*ruid\s*,\s*uid_t\s*,\s*euid\s*,\s*uid_t\s*,\s*suid\s*\)\s*\{)',
-            r'''\1
-#ifdef CONFIG_KSU_SUSFS
-	if (ksu_handle_setresuid(ruid, euid, suid)) {
-		pr_info("Something wrong with ksu_handle_setresuid()\\n");
-	}
-#endif''',
-            src,
-            count=1
-        )
-        print("✅ Appel injecté (fallback début de fonction)")
-    else:
-        print("✅ Appel injecté après les checks uid_valid")
-        src = new_src
+        print("❌ Impossible de trouver SYSCALL_DEFINE3(setresuid)")
+        sys.exit(1)
+    src = new_src
+    print("✅ Appel injecté au début de setresuid (position fonctionnelle)")
 else:
     print("✅ Appel déjà présent")
-    new_src = src
 
 with open('kernel/sys.c', 'w') as f:
-    f.write(new_src)
+    f.write(src)
 
-# Vérification
-if 'ksu_handle_setresuid' in new_src:
-    print("✅ Présence confirmée dans kernel/sys.c")
-else:
-    print("❌ Échec")
-    exit(1)
+count = src.count('ksu_handle_setresuid')
+print(f"✅ ksu_handle_setresuid apparaît {count} fois")
+if count < 2:
+    print("⚠️ Moins de 2 occurrences (déclaration + appel)")
 PYEOF
 
-echo "=== Contenu injecté ==="
-grep -n -A2 -B2 "ksu_handle_setresuid" kernel/sys.c || true
+echo "=== Vérification visuelle ==="
+grep -n -A8 -B2 "ksu_handle_setresuid" kernel/sys.c || true
 
 # ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
@@ -358,8 +324,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# --- Vérification stricte : seccomp doit être bien désactivé après olddefconfig ---
-
 # ==================== 6. PATCHES FINAUX ====================
 echo "=== Patch signatures modules + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
@@ -379,7 +343,7 @@ else
   exit 1
 fi
 
-# ==================== 7b. COMPILATION KSUD (ReSukiSU) ====================
+# ==================== 7b. COMPILATION KSUD ====================
 echo "=== Compilation de ksud (ReSukiSU) ==="
 cd "$GITHUB_WORKSPACE"
 
@@ -401,12 +365,7 @@ export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
-# --- ksud (daemon Rust) N'EST PAS épinglé à la même date que le driver kernel : il vient de la branche
-# --- main actuelle de ReSukiSU, qui a déjà remplacé toutes les dépendances de l'org GitHub Kernel-SU
-# --- (adb_client, java-properties, ...) par leurs propres forks depuis la PR #412 (14 sept 2026).
-# --- L'org Kernel-SU est suspendue par GitHub : tout pin de ksud antérieur à cette PR tombe sur des
-# --- dépendances git inaccessibles, une par une (adb_client puis java-properties rencontrés en pratique).
-echo "=== Clonage de ksud (ReSukiSU) sur main actuelle — dépendances Kernel-SU déjà remplacées en amont ==="
+echo "=== Clonage de ksud (ReSukiSU main actuelle) ==="
 git clone https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
 cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
 
@@ -422,29 +381,25 @@ AR_aarch64_linux_android = "$AR_PATH"
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
 EOF
 
-echo "=== Résolution des dépendances (main actuelle) et compilation de ksud ==="
+echo "=== Compilation de ksud ==="
 export CARGO_NET_GIT_FETCH_WITH_CLI=true
 cargo +nightly build --release --target aarch64-linux-android
 
-echo "=== Recherche du binaire ksud dans tout le repo cloné ==="
-find "$GITHUB_WORKSPACE/ksud-src" -type f -name "ksud" 2>/dev/null
 KSUD_BINARY=$(find "$GITHUB_WORKSPACE/ksud-src" -type f -name "ksud" -executable 2>/dev/null | head -1)
 
 if [ -z "$KSUD_BINARY" ]; then
-    echo "❌ ksud introuvable après recherche automatique"
-    echo "=== Contenu de la racine du repo ksud-src (diagnostic) ==="
+    echo "❌ ksud introuvable"
     ls -la "$GITHUB_WORKSPACE/ksud-src/"
     exit 1
 fi
 
-echo "✅ ksud trouvé ici : $KSUD_BINARY"
+echo "✅ ksud trouvé : $KSUD_BINARY"
 cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
-echo "✅ ksud (ReSukiSU) compilé"
 
 cd "$GITHUB_WORKSPACE"
 
-# ==================== 8. REPACK (avec ksud) - modèle backslashxx (proven) ====================
+# ==================== 8. REPACK ====================
 echo "=== Téléchargement des images stock ==="
 cd $GITHUB_WORKSPACE
 
@@ -455,4 +410,65 @@ curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/bo
     --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
 
-curl -fLo 
+curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
+
+if [ -f "boot-stock.img" ]; then
+  mkdir -p repack
+  cp boot-stock.img repack/boot.img
+
+  wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
+  unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
+  mv lib/x86_64/libmagiskboot.so repack/magiskboot
+  chmod +x repack/magiskboot
+  rm -rf Magisk-v27.0.apk lib/
+
+  cd repack
+
+  set +e
+  ./magiskboot unpack boot.img
+  UNPACK_EXIT=$?
+  set -e
+
+  if [ ! -f "kernel" ] || [ ! -f "ramdisk.cpio" ]; then
+    echo "❌ Échec unpack (exit: $UNPACK_EXIT)"
+    exit 1
+  fi
+
+  cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
+
+  echo "=== Installation de ksud ==="
+  ./magiskboot cpio ramdisk.cpio \
+    "mkdir 0755 data" \
+    "mkdir 0755 data/adb" \
+    "mkdir 0755 data/adb/ksud" \
+    "add 0755 data/adb/ksud/ksud $GITHUB_WORKSPACE/ksud"
+
+  echo "=== Installation de SU ==="
+  cp "$GITHUB_WORKSPACE/ksud" local_su_binary
+  chmod 755 local_su_binary
+  ./magiskboot cpio ramdisk.cpio \
+    "mkdir 0755 system" \
+    "mkdir 0755 system/bin" \
+    "add 06755 system/bin/su ./local_su_binary"
+  rm -f local_su_binary
+
+  ./magiskboot cpio ramdisk.cpio list | grep -E '(^|/)(su|ksud)$' || true
+
+  ./magiskboot repack boot.img new-boot.img || {
+    echo "❌ Échec du repack"
+    exit 1
+  }
+  mv new-boot.img ../final_boot.img
+  cd ..
+fi
+
+# ==================== 9. SORTIE ====================
+echo "=== Copie vers output ==="
+mkdir -p output
+cp final_boot.img output/ReSukiSU-SusFS-boot.img
+cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
+cp kernel_sources/build.log output/
+cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
+
+echo "=== BUILD TERMINÉ ==="
+ls -lh output/
