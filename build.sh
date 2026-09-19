@@ -669,135 +669,66 @@ echo "✅ ksud (ReSukiSU) compilé"
 
 cd "$GITHUB_WORKSPACE"
 
-# ==================== 8. REPACK (avec ksud) ====================
+# ==================== 8. REPACK (avec ksud) - modèle backslashxx (proven) ====================
 echo "=== Téléchargement des images stock ==="
 cd $GITHUB_WORKSPACE
 
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || true
-curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
-
-if [ ! -f "boot-stock.img" ]; then
-  echo "Fallback mkbootimg (boot.img, kernel seul)..."
+curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
   mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img \
     --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 \
     --ramdisk_offset 0x01000000 --tags_offset 0x00000100 \
     --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
-fi
+}
 
-wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
-unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
-mkdir -p repack
-mv lib/x86_64/libmagiskboot.so repack/magiskboot
-chmod +x repack/magiskboot
-rm -rf Magisk-v27.0.apk lib/
+curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
 
-RAMDISK_LOCATION=""
-
-# --- Étape 1 : on regarde d'abord si le ramdisk est bien DANS boot.img (cas non-GKI classique) ---
 if [ -f "boot-stock.img" ]; then
-  echo "=== Unpack de boot.img pour vérifier où vit le ramdisk ==="
+  mkdir -p repack
   cp boot-stock.img repack/boot.img
+
+  wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
+  unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
+  mv lib/x86_64/libmagiskboot.so repack/magiskboot
+  chmod +x repack/magiskboot
+  rm -rf Magisk-v27.0.apk lib/
+
   cd repack
+
+  set +e
   ./magiskboot unpack boot.img
-  cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
+  UNPACK_EXIT=$?
+  set -e
 
-  if [ -f "ramdisk.cpio" ] && [ -s "ramdisk.cpio" ]; then
-    echo "✅ Ramdisk trouvé dans boot.img (device non-GKI classique, kernel+ramdisk réunis)"
-    RAMDISK_LOCATION="boot"
-  else
-    echo "⚠️ Pas de ramdisk exploitable dans boot.img — on va chercher côté init_boot.img"
+  if [ ! -f "kernel" ] || [ ! -f "ramdisk.cpio" ]; then
+    echo "❌ Échec réel du unpack (exit magiskboot: $UNPACK_EXIT)"
+    exit 1
   fi
-  cd ..
-fi
 
-# --- Étape 2 : si pas de ramdisk dans boot.img, on tente init_boot.img (device split GKI-style) ---
-if [ "$RAMDISK_LOCATION" != "boot" ]; then
-  curl -fLo init_boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/init_boot.img" 2>/dev/null || true
-  if [ -f "init_boot-stock.img" ]; then
-    echo "=== Unpack de init_boot.img pour vérifier le ramdisk ==="
-    rm -rf repack_initboot
-    mkdir -p repack_initboot
-    cp init_boot-stock.img repack_initboot/init_boot.img
-    cp repack/magiskboot repack_initboot/magiskboot
-    cd repack_initboot
-    ./magiskboot unpack init_boot.img
-    if [ -f "ramdisk.cpio" ] && [ -s "ramdisk.cpio" ]; then
-      echo "✅ Ramdisk trouvé dans init_boot.img (device split GKI-style)"
-      RAMDISK_LOCATION="init_boot"
-    fi
-    cd ..
-  fi
-fi
+  cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
 
-if [ -z "$RAMDISK_LOCATION" ]; then
-  echo "❌ Aucun ramdisk exploitable trouvé, ni dans boot.img ni dans init_boot.img — vérifier manuellement le layout de partitions du device (vendor_boot possible)"
-  exit 1
-fi
+  echo "=== Installation de ksud (chemin /data/adb/ksud/ksud, requis par sucompat) ==="
+  ./magiskboot cpio ramdisk.cpio \
+    "mkdir 0755 data" \
+    "mkdir 0755 data/adb" \
+    "mkdir 0755 data/adb/ksud" \
+    "add 0755 data/adb/ksud/ksud $GITHUB_WORKSPACE/ksud"
 
-# --- Injection de ksud + trigger init.rc dans le repack qui contient réellement le ramdisk ---
-if [ "$RAMDISK_LOCATION" = "boot" ]; then
-  WORKDIR="repack"
-  IMG_NAME="boot.img"
-  OUT_NAME="final_boot.img"
-else
-  WORKDIR="repack_initboot"
-  IMG_NAME="init_boot.img"
-  OUT_NAME="final_init_boot.img"
-fi
+  echo "=== Installation de SU ==="
+  cp "$GITHUB_WORKSPACE/ksud" local_su_binary
+  chmod 755 local_su_binary
+  ./magiskboot cpio ramdisk.cpio \
+    "mkdir 0755 system" \
+    "mkdir 0755 system/bin" \
+    "add 06755 system/bin/su ./local_su_binary"
+  rm -f local_su_binary
 
-cd "$WORKDIR"
+  echo "=== Vérification SU/ksud dans ramdisk ==="
+  ./magiskboot cpio ramdisk.cpio list | grep -E '(^|/)(su|ksud)$' || true
 
-# --- Chemin canonique attendu par ksud lui-même : /data/adb/ksu/bin/ksud ---
-echo "=== Installation de ksud dans le ramdisk (chemin canonique /data/adb/ksu/bin/ksud, dans $IMG_NAME) ==="
-./magiskboot cpio ramdisk.cpio \
-  "mkdir 0755 data" \
-  "mkdir 0755 data/adb" \
-  "mkdir 0755 data/adb/ksu" \
-  "mkdir 0755 data/adb/ksu/bin" \
-  "add 0755 data/adb/ksu/bin/ksud $GITHUB_WORKSPACE/ksud"
-
-cp "$GITHUB_WORKSPACE/ksud" local_su_binary
-chmod 755 local_su_binary
-./magiskboot cpio ramdisk.cpio \
-  "mkdir 0755 system" \
-  "mkdir 0755 system/bin" \
-  "add 06755 system/bin/su ./local_su_binary"
-rm -f local_su_binary
-
-# --- CRITIQUE : sans ceci, rien n'exécute jamais ksud au boot (AUTO_INITRC_HOOK est désactivé) ---
-echo "=== Ajout du déclencheur init.rc pour lancer ksud au boot ==="
-./magiskboot cpio ramdisk.cpio "extract init.rc /tmp/init.rc"
-if [ ! -f /tmp/init.rc ]; then
-  echo "❌ init.rc introuvable dans le ramdisk — impossible d'ajouter le déclencheur ksud"
-  exit 1
-fi
-if ! grep -q "service ksud" /tmp/init.rc; then
-  cat >> /tmp/init.rc << 'RCEOF'
-
-on post-fs-data
-    start ksud
-
-service ksud /data/adb/ksu/bin/ksud daemon
-    user root
-    seclabel u:r:su:s0
-    disabled
-    oneshot
-RCEOF
-  echo "✅ Bloc service ksud ajouté à init.rc"
-else
-  echo "✅ Bloc service ksud déjà présent dans init.rc"
-fi
-./magiskboot cpio ramdisk.cpio "add 0750 init.rc /tmp/init.rc"
-
-./magiskboot repack "$IMG_NAME" "new-$IMG_NAME"
-mv "new-$IMG_NAME" "../$OUT_NAME"
-cd ..
-
-# --- Si le ramdisk était dans init_boot.img, boot.img (kernel seul) doit quand même être repacké séparément ---
-if [ "$RAMDISK_LOCATION" = "init_boot" ] && [ -f "boot-stock.img" ]; then
-  echo "=== Repack de boot.img (kernel seul, le ramdisk/ksud est dans init_boot.img) ==="
-  cd repack
-  ./magiskboot repack boot.img new-boot.img
+  ./magiskboot repack boot.img new-boot.img || {
+    echo "❌ Échec du repack"
+    exit 1
+  }
   mv new-boot.img ../final_boot.img
   cd ..
 fi
@@ -806,7 +737,6 @@ fi
 echo "=== Copie vers output ==="
 mkdir -p output
 cp final_boot.img output/ReSukiSU-SusFS-boot.img
-[ -f final_init_boot.img ] && cp final_init_boot.img output/ReSukiSU-SusFS-init_boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
