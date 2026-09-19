@@ -32,57 +32,46 @@ RESUKISU_COMMIT=$(cd /tmp/resukisu_pin && git rev-list -n 1 --before="2026-08-17
 echo "Commit ReSukiSU épinglé : $RESUKISU_COMMIT"
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s -- "$RESUKISU_COMMIT"
 
+# ==================== 2b. DIAGNOSTIC KERNEL_COMPAT ====================
 echo ""
-echo "=== DIAGNOSTIC seccomp_cache.c ==="
-if [ -f "drivers/kernelsu/infra/seccomp_cache.c" ]; then
-    echo "--- Contenu (30 premières lignes) ---"
-    head -30 drivers/kernelsu/infra/seccomp_cache.c
-    
+echo "=== Diagnostic kernel_compat.mk ==="
+
+if [ -f "drivers/kernelsu/tools/kernel_compat.mk" ]; then
+    echo "✅ kernel_compat.mk présent"
+    echo "--- Contenu (30 dernières lignes) ---"
+    tail -30 drivers/kernelsu/tools/kernel_compat.mk
     echo ""
-    echo "--- Fonctions de seccomp ---"
-    grep -n "ksu_seccomp\|disable_seccomp\|SECCOMP" drivers/kernelsu/infra/seccomp_cache.c | head -20
-    
-    echo ""
-    echo "--- Checks LINUX_VERSION_CODE ---"
-    grep -n "LINUX_VERSION_CODE" drivers/kernelsu/infra/seccomp_cache.c
+    echo "--- Macros KSU_COMPAT détectées ---"
+    grep -o "KSU_COMPAT_[A-Z_]*" drivers/kernelsu/tools/kernel_compat.mk | sort -u
 else
-    echo "❌ seccomp_cache.c non trouvé"
+    echo "❌ kernel_compat.mk ABSENT"
 fi
+
+echo ""
+echo "=== Version kernel détectée ==="
+grep -E "^(VERSION|PATCHLEVEL|SUBLEVEL)" Makefile
+
+echo ""
+echo "=== Vérification structure drivers/kernelsu ==="
+ls -la drivers/kernelsu/ | head -20
+echo ""
+echo "=== Fichiers seccomp et selinux_hide ==="
+find drivers/kernelsu -name "seccomp_cache.c" -o -name "selinux_hide.c" -o -name "kernel_compat.h" 2>/dev/null
 
 # ==================== 2c. PATCH SECCOMP POUR 4.19 ====================
 echo ""
 echo "=== Patch seccomp pour kernel 4.19 ==="
 
-# 1. Trouver seccomp_cache.c
-SECCOMP_FILE=""
-for f in drivers/kernelsu/infra/seccomp_cache.c drivers/kernelsu/feature/seccomp_cache.c drivers/kernelsu/seccomp_cache.c; do
-    if [ -f "$f" ]; then
-        SECCOMP_FILE="$f"
-        break
-    fi
-done
+# 1. CRÉER un fichier séparé pour la désactivation seccomp
+SECCOMP_HELPER="drivers/kernelsu/infra/seccomp_helper.c"
+mkdir -p drivers/kernelsu/infra
 
-if [ -z "$SECCOMP_FILE" ]; then
-    echo "⚠️ seccomp_cache.c non trouvé — création d'un fichier dédié"
-    SECCOMP_FILE="drivers/kernelsu/infra/seccomp_helper.c"
-    mkdir -p drivers/kernelsu/infra
-    cat > "$SECCOMP_FILE" << 'SECCOMP_HEADER'
+cat > "$SECCOMP_HELPER" << 'SECCOMP_EOF'
 #include <linux/module.h>
 #include <linux/sched.h>
 #include <linux/seccomp.h>
 #include <linux/cred.h>
-SECCOMP_HEADER
-fi
-
-echo "→ Patch de $SECCOMP_FILE"
-
-# 2. Forcer le #if 5.10 à 1
-sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)/#if 1 \/* Patched 4.19 *\//g' "$SECCOMP_FILE"
-sed -i 's/#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)/#if 0 \/* Patched 4.19 *\//g' "$SECCOMP_FILE"
-
-# 3. Ajouter la fonction de désactivation seccomp
-if ! grep -q "ksu_disable_seccomp_for_current" "$SECCOMP_FILE"; then
-    cat >> "$SECCOMP_FILE" << 'SECCOMP_EOF'
+#include <linux/version.h>
 
 /* --- Patch 4.19 : désactivation seccomp --- */
 #ifdef CONFIG_KSU
@@ -100,19 +89,18 @@ void ksu_disable_seccomp_for_current(void)
 EXPORT_SYMBOL(ksu_disable_seccomp_for_current);
 #endif
 SECCOMP_EOF
-    echo "✅ Fonction ksu_disable_seccomp_for_current ajoutée"
-fi
 
-# 4. Ajouter au Kbuild si fichier dédié
+echo "✅ seccomp_helper.c créé"
+
+# 2. Ajouter au Kbuild
 if [ -f "drivers/kernelsu/Kbuild" ]; then
-    if [ "$SECCOMP_FILE" = "drivers/kernelsu/infra/seccomp_helper.c" ]; then
-        if ! grep -q "seccomp_helper.o" drivers/kernelsu/Kbuild; then
-            sed -i '/^kernelsu-objs :=/a kernelsu-objs += infra/seccomp_helper.o' drivers/kernelsu/Kbuild
-        fi
+    if ! grep -q "seccomp_helper.o" drivers/kernelsu/Kbuild; then
+        sed -i '/^kernelsu-objs :=/a kernelsu-objs += infra/seccomp_helper.o' drivers/kernelsu/Kbuild
+        echo "✅ seccomp_helper.o ajouté au Kbuild"
     fi
 fi
 
-# 5. Trouver supercall.c et patcher ksu_handle_sys_reboot
+# 3. Trouver supercall.c et patcher ksu_handle_sys_reboot
 SUPERCALL_FILE=""
 for f in drivers/kernelsu/supercall/supercall.c drivers/kernelsu/uapi/supercall_dispatch.c drivers/kernelsu/supercalls.c; do
     if [ -f "$f" ]; then
@@ -122,19 +110,16 @@ for f in drivers/kernelsu/supercall/supercall.c drivers/kernelsu/uapi/supercall_
 done
 
 if [ -z "$SUPERCALL_FILE" ]; then
-    echo "⚠️ supercall.c non trouvé — recherche alternative"
     SUPERCALL_FILE=$(find drivers/kernelsu -name "supercall*.c" 2>/dev/null | head -1)
 fi
 
 if [ -n "$SUPERCALL_FILE" ]; then
     echo "→ Patch de $SUPERCALL_FILE"
     
-    # Ajouter l'extern
     if ! grep -q "ksu_disable_seccomp_for_current" "$SUPERCALL_FILE"; then
         sed -i '1i extern void ksu_disable_seccomp_for_current(void);' "$SUPERCALL_FILE"
     fi
     
-    # Patch avec Python
     python3 - "$SUPERCALL_FILE" << 'PYEOF'
 import sys
 import re
@@ -145,12 +130,10 @@ print(f"→ Patch de {filepath}")
 with open(filepath, 'r') as f:
     content = f.read()
 
-# Chercher la définition de ksu_handle_sys_reboot
 pattern = r'(int ksu_handle_sys_reboot\([^)]*\)\s*\{)'
 match = re.search(pattern, content)
 
 if match:
-    # Insérer après l'accolade ouvrante
     insert_pos = match.end()
     patch = '''
     /* Patch 4.19 : désactiver seccomp avant l'install fd */
@@ -160,9 +143,8 @@ if match:
     
     with open(filepath, 'w') as f:
         f.write(content)
-    print("✅ Appel ksu_disable_seccomp inséré après {")
+    print("✅ Appel ksu_disable_seccomp inséré")
 else:
-    # Fallback : insérer avant "if (magic1 != KSU_INSTALL_MAGIC1)"
     old = 'if (magic1 != KSU_INSTALL_MAGIC1)'
     new = 'ksu_disable_seccomp_for_current();\n    if (magic1 != KSU_INSTALL_MAGIC1)'
     
@@ -170,7 +152,7 @@ else:
         content = content.replace(old, new, 1)
         with open(filepath, 'w') as f:
             f.write(content)
-        print("✅ Appel ksu_disable_seccomp inséré (fallback avant magic1)")
+        print("✅ Appel ksu_disable_seccomp inséré (fallback)")
     else:
         print("❌ Signature ksu_handle_sys_reboot introuvable")
 PYEOF
@@ -179,7 +161,6 @@ else
 fi
 
 echo "✅ Patch seccomp 4.19 terminé"
-        
 
 # ==================== 3. HOOKS MANUELS ReSukiSU ====================
 echo "=== Hooks ReSukiSU ==="
@@ -633,7 +614,6 @@ with open('fs/namespace.c', 'w') as f:
     f.write(content)
 PYEOF
 
-# Vérification stricte : aucun .rej ne doit persister
 if find . -name "*.rej" -type f | grep -q .; then
     echo "❌ ÉCHEC CRITIQUE : Des rejets de patch SuSFS persistent."
     find . -name "*.rej" -type f -exec echo "=== {} ===" \; -exec cat {} \;
@@ -641,7 +621,6 @@ if find . -name "*.rej" -type f | grep -q .; then
 fi
 echo "✅ Patch SuSFS appliqué avec succès (aucun rejet)."
 
-# Copie des fichiers source/headers SuSFS
 if [ -d "/tmp/jack_repo/Patches/fs" ]; then
     cp -rn /tmp/jack_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
@@ -651,18 +630,15 @@ fi
 
 find . -name "*.orig" -type f -delete 2>/dev/null || true
 
-# Makefile
 if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
     echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
     [ -f "fs/sus_su.c" ] && ! grep -q "sus_su.o" fs/Makefile && echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
 fi
 
-# Correction variable 'vma' non utilisée
 if [ -f "fs/proc/task_mmu.c" ]; then
     sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
 fi
 
-# Symboles susfs
 if [ -f "fs/susfs.c" ] && ! grep -q "susfs_is_current_ksu_domain" fs/susfs.c; then
     cat >> fs/susfs.c << 'SUSFS_EOF'
 
