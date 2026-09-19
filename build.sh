@@ -1,8 +1,9 @@
 #!/bin/bash
 set -e
-echo "=== Début du build ReSukiSU + SuSFS pour kiev (SM8250) ==="
+echo "=== Build ReSukiSU + SuSFS (JackA1ltman mainline) pour kiev (SM8250) ==="
 df -h
 
+# ==================== 0. ENVIRONNEMENT ====================
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 sudo apt-get clean
 
@@ -23,100 +24,186 @@ cd kernel_sources
 git log --oneline -1
 
 # ==================== 2. INTÉGRATION ReSukiSU ====================
-echo "=== Intégration ReSukiSU ==="
-rm -rf drivers/kernelsu kernelSU susfs4ksu || true
-curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
+echo "=== Intégration ReSukiSU (épinglée au 17 août 2026) ==="
+rm -rf drivers/kernelsu kernelSU susfs4ksu KernelSU || true
+rm -rf /tmp/resukisu_pin
+git clone https://github.com/ReSukiSU/ReSukiSU.git /tmp/resukisu_pin
+RESUKISU_COMMIT=$(cd /tmp/resukisu_pin && git rev-list -n 1 --before="2026-08-17 23:59:59" main)
+echo "Commit ReSukiSU épinglé : $RESUKISU_COMMIT"
+curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s -- "$RESUKISU_COMMIT"
 
-# ==================== Contournement check SuSFS obligatoire ====================
-echo "=== Contournement de l'exigence SuSFS ==="
-if [ -f drivers/kernelsu/Kbuild ]; then
-  sed -i '/You should integrate susfs in your kernel/d' drivers/kernelsu/Kbuild
-  sed -i 's/$(error You should integrate susfs in your kernel.)/$(info SuSFS check bypassed)/g' drivers/kernelsu/Kbuild
-  echo "✅ Check SuSFS contourné"
+echo ""
+echo "=== DIAGNOSTIC seccomp_cache.c ==="
+if [ -f "drivers/kernelsu/infra/seccomp_cache.c" ]; then
+    echo "--- Contenu (30 premières lignes) ---"
+    head -30 drivers/kernelsu/infra/seccomp_cache.c
+    
+    echo ""
+    echo "--- Fonctions de seccomp ---"
+    grep -n "ksu_seccomp\|disable_seccomp\|SECCOMP" drivers/kernelsu/infra/seccomp_cache.c | head -20
+    
+    echo ""
+    echo "--- Checks LINUX_VERSION_CODE ---"
+    grep -n "LINUX_VERSION_CODE" drivers/kernelsu/infra/seccomp_cache.c
 else
-  echo "⚠️  drivers/kernelsu/Kbuild non trouvé"
+    echo "❌ seccomp_cache.c non trouvé"
 fi
+
+# ==================== 2c. PATCH SECCOMP POUR 4.19 ====================
+echo ""
+echo "=== Patch seccomp pour kernel 4.19 ==="
+
+# 1. Chercher le fichier seccomp_cache ou équivalent
+SECCOMP_FILE=""
+for f in drivers/kernelsu/infra/seccomp_cache.c drivers/kernelsu/feature/seccomp_cache.c drivers/kernelsu/seccomp_cache.c; do
+    if [ -f "$f" ]; then
+        SECCOMP_FILE="$f"
+        break
+    fi
+done
+
+if [ -z "$SECCOMP_FILE" ]; then
+    echo "⚠️ seccomp_cache.c non trouvé — création d'un fichier dédié"
+    SECCOMP_FILE="drivers/kernelsu/infra/seccomp_helper.c"
+    mkdir -p drivers/kernelsu/infra
+    cat > "$SECCOMP_FILE" << 'SECCOMP_HEADER'
+#include <linux/module.h>
+#include <linux/sched.h>
+#include <linux/seccomp.h>
+#include <linux/cred.h>
+
+SECCOMP_HEADER
+fi
+
+echo "→ Patch de $SECCOMP_FILE"
+
+# 2. Ajouter la fonction de désactivation seccomp
+cat >> "$SECCOMP_FILE" << 'SECCOMP_EOF'
+
+/* --- Patch 4.19 : désactivation seccomp --- */
+#ifdef CONFIG_KSU
+void ksu_disable_seccomp_for_current(void)
+{
+    struct task_struct *task = current;
+    
+    if (task && task->seccomp.mode != SECCOMP_MODE_DISABLED) {
+        task->seccomp.mode = SECCOMP_MODE_DISABLED;
+        task->seccomp.filter = NULL;
+        clear_tsk_thread_flag(task, TIF_SECCOMP);
+        pr_info("KernelSU: seccomp disabled for pid %d\n", task->pid);
+    }
+}
+EXPORT_SYMBOL(ksu_disable_seccomp_for_current);
+#endif
+SECCOMP_EOF
+
+echo "✅ Fonction ksu_disable_seccomp_for_current ajoutée dans $SECCOMP_FILE"
+
+# 3. S'assurer que le fichier est dans le Kbuild
+if [ -f "drivers/kernelsu/Kbuild" ]; then
+    if [ "$SECCOMP_FILE" = "drivers/kernelsu/infra/seccomp_helper.c" ]; then
+        if ! grep -q "seccomp_helper.o" drivers/kernelsu/Kbuild; then
+            sed -i '/^kernelsu-objs :=/a kernelsu-objs += infra/seccomp_helper.o' drivers/kernelsu/Kbuild
+            echo "→ seccomp_helper.o ajouté au Kbuild"
+        fi
+    fi
+fi
+
+# 4. Appeler la fonction depuis sys_reboot
+KSUD_INTEGRATION=""
+for f in drivers/kernelsu/runtime/ksud_integration.c drivers/kernelsu/ksud_integration.c; do
+    if [ -f "$f" ]; then
+        KSUD_INTEGRATION="$f"
+        break
+    fi
+done
+
+if [ -n "$KSUD_INTEGRATION" ]; then
+    echo "→ Patch de $KSUD_INTEGRATION"
+    
+    # Ajouter l'extern
+    if ! grep -q "ksu_disable_seccomp_for_current" "$KSUD_INTEGRATION"; then
+        sed -i '1i extern void ksu_disable_seccomp_for_current(void);' "$KSUD_INTEGRATION"
+        
+        # Ajouter l'appel dans ksu_handle_sys_reboot
+        python3 - << 'PYEOF'
+import re
+with open('drivers/kernelsu/runtime/ksud_integration.c', 'r') as f:
+    content = f.read()
+
+# Chercher la ligne "if (magic1 != KSU_INSTALL_MAGIC1)"
+old = '''if (magic1 != KSU_INSTALL_MAGIC1)
+        return -EINVAL;'''
+new = '''if (magic1 != KSU_INSTALL_MAGIC1)
+        return -EINVAL;
+    
+    /* Patch 4.19 : désactiver seccomp avant l'install fd */
+    ksu_disable_seccomp_for_current();'''
+
+if old in content:
+    content = content.replace(old, new, 1)
+    with open('drivers/kernelsu/runtime/ksud_integration.c', 'w') as f:
+        f.write(content)
+    print("✅ Appel ksu_disable_seccomp ajouté dans ksud_integration.c")
+else:
+    # Fallback : chercher une autre signature
+    pattern = r'(int ksu_handle_sys_reboot\([^)]+\)\s*\{)'
+    if re.search(pattern, content):
+        content = re.sub(pattern, r'\1\n    /* Patch 4.19 */\n    ksu_disable_seccomp_for_current();', content, count=1)
+        with open('drivers/kernelsu/runtime/ksud_integration.c', 'w') as f:
+            f.write(content)
+        print("✅ Appel ksu_disable_seccomp ajouté (fallback)")
+    else:
+        print("⚠️ ksu_handle_sys_reboot non trouvé — ajout dans ksu_handle_execveat_ksud")
+PYEOF
+    fi
+fi
+
+# 5. Patch aussi seccomp_cache.c s'il existe (pour retirer le check 5.10)
+if [ -f "drivers/kernelsu/infra/seccomp_cache.c" ]; then
+    sed -i 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)/#if 1 \/* Patched 4.19 *\//g' drivers/kernelsu/infra/seccomp_cache.c
+    sed -i 's/#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)/#if 0 \/* Patched 4.19 *\//g' drivers/kernelsu/infra/seccomp_cache.c
+    echo "✅ seccomp_cache.c patché (check 5.10 retiré)"
+fi
+
+echo "✅ Patch seccomp 4.19 terminé"
 
 # ==================== 3. HOOKS MANUELS ReSukiSU ====================
 echo "=== Hooks ReSukiSU ==="
 
-# --- execveat (version correcte pour 4.19 + ReSukiSU) ---
-if ! grep -q "ksu_handle_post_execveat" fs/exec.c; then
+# --- execveat ---
+if ! grep -q "ksu_handle_execveat" fs/exec.c; then
   cat > /tmp/hook_execveat.py << 'PYEOF'
 import re
-
 with open('fs/exec.c', 'r') as f:
     content = f.read()
-
-if 'ksu_handle_post_execveat' not in content:
-    # Déclaration
+if 'ksu_handle_execveat' not in content:
     extern_decl = '''
 #ifdef CONFIG_KSU_MANUAL_HOOK
 __attribute__((hot))
 extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
 				void *argv, void *envp, int *flags);
-__attribute__((hot))
-extern int ksu_handle_post_execveat(int *fd, struct filename **filename_ptr,
-				void *argv, void *envp, int *flags, int *retval);
 #endif
 '''
-
-    # On injecte la déclaration avant do_execveat_common
     pattern = r'(static int do_execveat_common\()'
     content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-
-    # On remplace le corps de do_execveat_common
-    old_body = '''static int do_execveat_common(int fd, struct filename *filename,
-			      struct user_arg_ptr argv,
-			      struct user_arg_ptr envp,
-			      int flags)
-{
-	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
-}'''
-
-    new_body = '''static int do_execveat_common(int fd, struct filename *filename,
-			      struct user_arg_ptr argv,
-			      struct user_arg_ptr envp,
-			      int flags)
-{
+    old_code = '''	struct user_arg_ptr argv = { .ptr.native = __argv };
+	struct user_arg_ptr envp = { .ptr.native = __envp };
+	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);'''
+    new_code = '''	struct user_arg_ptr argv = { .ptr.native = __argv };
+	struct user_arg_ptr envp = { .ptr.native = __envp };
 #ifdef CONFIG_KSU_MANUAL_HOOK
-	int retval;
-	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-	retval = __do_execve_file(fd, filename, argv, envp, flags, NULL);
-	ksu_handle_post_execveat(&fd, &filename, &argv, &envp, &flags, &retval);
-	return retval;
-#else
-	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
+	ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);
 #endif
-}'''
-
-    if old_body in content:
-        content = content.replace(old_body, new_body)
-        print("OK: execveat + post_execveat (version recommandée)")
+	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);'''
+    if old_code in content:
+        content = content.replace(old_code, new_code, 1)
+        print("OK: execveat")
     else:
-        # Fallback plus souple
-        content = re.sub(
-            r'(static int do_execveat_common\(int fd, struct filename \*filename,\s*'
-            r'struct user_arg_ptr argv,\s*'
-            r'struct user_arg_ptr envp,\s*'
-            r'int flags\)\s*\{\s*)'
-            r'return __do_execve_file\(fd, filename, argv, envp, flags, NULL\);',
-            r'''\1
-#ifdef CONFIG_KSU_MANUAL_HOOK
-	int retval;
-	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-	retval = __do_execve_file(fd, filename, argv, envp, flags, NULL);
-	ksu_handle_post_execveat(&fd, &filename, &argv, &envp, &flags, &retval);
-	return retval;
-#else
-	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
-#endif''',
-            content,
-            count=1,
-            flags=re.DOTALL
-        )
-        print("OK: execveat + post_execveat (fallback)")
-
+        pattern = r'(int do_execve\(struct filename \*filename,.*?struct user_arg_ptr envp = \{ \.ptr\.native = __envp \};\n)'
+        replacement = r'\1#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n'
+        content = re.sub(pattern, replacement, content, count=1)
+        print("OK: execveat (alternatif)")
 with open('fs/exec.c', 'w') as f:
     f.write(content)
 PYEOF
@@ -381,175 +468,209 @@ PYEOF
   python3 /tmp/hook_input.py
 fi
 
-# ==================== 4. INTÉGRATION SuSFS (méthode JackA1ltman) ====================
-echo ""
-echo "=== Intégration SuSFS (méthode NonGKI_Kernel_Build_2nd) ==="
+echo "✅ Hooks ReSukiSU en place"
 
+# ==================== 4. INTÉGRATION SuSFS (JackA1ltman) ====================
+echo ""
+echo "=== Intégration SuSFS depuis JackA1ltman/NonGKI_Kernel_Build_2nd (mainline) ==="
 cd "$GITHUB_WORKSPACE"
-rm -rf /tmp/nongki_patches
-git clone --depth=1 --branch mainline https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/nongki_patches
+rm -rf /tmp/jack_repo
+git clone --branch mainline https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
+JACK_COMMIT=$(cd /tmp/jack_repo && git rev-list -n 1 --before="2026-08-17 23:59:59" mainline)
+echo "Commit JackA1ltman/NonGKI_Kernel_Build_2nd épinglé : $JACK_COMMIT"
+(cd /tmp/jack_repo && git checkout "$JACK_COMMIT")
 
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
-# Application du patch SuSFS 4.19
-SUSFS_PATCH="/tmp/nongki_patches/Patches/Patch/susfs_patch_to_4.19.patch"
-if [ -f "$SUSFS_PATCH" ]; then
-  echo "=== Application du patch SuSFS 4.19 ==="
-  patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
-else
-  echo "❌ Patch SuSFS 4.19 introuvable"
-  exit 1
+SUSFS_PATCH="/tmp/jack_repo/Patches/Patch/susfs_patch_to_4.19.patch"
+if [ ! -f "$SUSFS_PATCH" ]; then
+    echo "❌ Patch SuSFS 4.19 non trouvé dans la branche mainline !"
+    find /tmp/jack_repo/Patches -name "*.patch" 2>/dev/null | sort
+    exit 1
+fi
+echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
+
+echo "=== Application du patch SuSFS ==="
+patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
+
+# ---------- Corrections des .rej ----------
+echo "=== Corrections des rejets de patch ==="
+
+if [ -f "fs/proc/task_mmu.c.rej" ]; then
+    echo "⚠️ Rejet détecté dans task_mmu.c. Correction automatique..."
+    python3 - << 'PYEOF'
+import re, os
+file_path = 'fs/proc/task_mmu.c'
+if os.path.exists(file_path):
+    with open(file_path, 'r') as f: content = f.read()
+    if 'SUSFS_IS_INODE_SUS_MAP' not in content:
+        content = content.replace("ret = walk_page_range(start_vaddr, end, &pagemap_walk);",
+            "#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n\t\tvma = find_vma(mm, start_vaddr);\n\t\tif (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n\t\t\tgoto bypass_orig_flow;\n#endif\n\t\tret = walk_page_range(start_vaddr, end, &pagemap_walk);")
+        content = re.sub(r'(ret = walk_page_range.*?)(up_read\(&mm->mmap_sem\);|mmap_read_unlock\(mm\);)',
+            r'\1#ifdef CONFIG_KSU_SUSFS_SUS_MAP\nbypass_orig_flow:\n#endif\n\t\2', content, flags=re.DOTALL)
+        with open(file_path, 'w') as f: f.write(content)
+PYEOF
+    rm -f fs/proc/task_mmu.c.rej
 fi
 
-# Copie des fichiers sources SuSFS
-if [ -d "/tmp/nongki_patches/Patches/fs" ]; then
-  cp -rf /tmp/nongki_patches/Patches/fs/* fs/ 2>/dev/null || true
-fi
-if [ -d "/tmp/nongki_patches/Patches/include/linux" ]; then
-  cp -rf /tmp/nongki_patches/Patches/include/linux/* include/linux/ 2>/dev/null || true
-fi
-
-# Ajout dans Makefile
-if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
-  echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
-fi
-
-# Ajout de la section Kconfig
-if [ -f "drivers/kernelsu/Kconfig" ] && ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
-  cat >> drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
-
-menuconfig KSU_SUSFS
-	bool "KernelSU SUSFS support"
-	depends on KSU
-	default y
-if KSU_SUSFS
-config KSU_SUSFS_SUS_PATH
-	bool "sus_path"
-	default y
-config KSU_SUSFS_SUS_MOUNT
-	bool "sus_mount"
-	default y
-config KSU_SUSFS_SUS_KSTAT
-	bool "sus_kstat"
-	default y
-config KSU_SUSFS_SUS_MAP
-	bool "sus_map"
-	default n
-config KSU_SUSFS_SPOOF_UNAME
-	bool "spoof_uname"
-	default y
-config KSU_SUSFS_ENABLE_LOG
-	bool "enable_log"
-	default n
-config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-	bool "hide_ksu_susfs_symbols"
-	default y
-config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-	bool "spoof_cmdline_or_bootconfig"
-	default y
-config KSU_SUSFS_OPEN_REDIRECT
-	bool "open_redirect"
-	default y
-config KSU_SUSFS_TRY_UMOUNT
-	bool "try_umount"
-	default y
-config KSU_SUSFS_HAS_MAGIC_MOUNT
-	bool "has_magic_mount"
-	default y
-config KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
-	bool "auto_add_ksu_default_mount"
-	default y
-config KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
-	bool "auto_add_sus_bind_mount"
-	default y
-config KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
-	bool "auto_add_try_umount_for_bind_mount"
-	default y
-endif
-KCONFIG_EOF
-fi
-
-# Nettoyage des rejets
-find . -name "*.rej" -type f -delete 2>/dev/null || true
-
-echo "✅ SuSFS intégré proprement"
-
-# ==================== Correction complète des déclarations SuSFS ====================
-echo "=== Correction complète des déclarations SuSFS ==="
-
-mkdir -p include/linux
-
-cat > include/linux/susfs_def.h << 'EOF'
-#ifndef _LINUX_SUSFS_DEF_H
-#define _LINUX_SUSFS_DEF_H
-
-#include <linux/types.h>
-#include <linux/static_key.h>
-#include <linux/jump_label.h>
-#include <linux/string.h>
-
-/* Constantes */
-#ifndef DEFAULT_KSU_MNT_ID
-#define DEFAULT_KSU_MNT_ID           1000
+if [ -f "fs/namespace.c.rej" ] && grep -q "vfs_kern_mount" "fs/namespace.c.rej"; then
+    echo "⚠️ Rejet détecté dans namespace.c. Correction automatique..."
+    python3 - << 'PYEOF'
+import re, os
+file_path = 'fs/namespace.c'
+if os.path.exists(file_path):
+    with open(file_path, 'r') as f: content = f.read()
+    if 'susfs_alloc_non_unshare_ksu_vfsmnt' not in content:
+        content = re.sub(r'(\tif \(!type\)\n\t\treturn ERR_PTR\(-ENODEV\);\n)(\n\tmnt = alloc_vfsmnt\(name\);)',
+            r'''\1
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+\tif (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {
+\t\tif (susfs_is_current_ksu_domain()) {
+\t\t\tmnt = susfs_alloc_non_unshare_ksu_vfsmnt(name ?:"none");
+\t\t\tgoto bypass_orig_flow;
+\t\t}
+\t}
 #endif
+\2
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+bypass_orig_flow:
+#endif''', content)
+        with open(file_path, 'w') as f: f.write(content)
+PYEOF
+    rm -f fs/namespace.c.rej
+fi
 
-#ifndef DEFAULT_KSU_MNT_MINOR_DEV
-#define DEFAULT_KSU_MNT_MINOR_DEV    (1 << 20)
-#endif
+echo "=== Correction inconditionnelle des déclarations SuSFS dans fs/super.c ==="
+python3 - << 'PYEOF'
+import re
 
-/* Static key */
+with open('fs/super.c', 'r') as f:
+    content = f.read()
+
+if 'extern bool susfs_is_current_ksu_domain' not in content:
+    decl = """
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#include <linux/susfs_def.h>
+extern bool susfs_is_current_ksu_domain(void);
 extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+#ifndef DEFAULT_KSU_MNT_MINOR_DEV
+#define DEFAULT_KSU_MNT_MINOR_DEV (1 << 20)
+#endif
+#endif /* CONFIG_KSU_SUSFS_SUS_MOUNT */
+"""
+    content = re.sub(r'(#include\s+"internal\.h"\s*\n)', r'\1' + decl, content, count=1)
+    print("✅ Déclarations forcées injectées dans fs/super.c")
+else:
+    print("✅ Déclarations déjà présentes dans fs/super.c")
 
-/* Fonctions */
-bool susfs_is_current_ksu_domain(void);
-bool susfs_is_current_app_uid(void);
-bool susfs_is_current_proc_umounted(void);
-bool susfs_starts_with(const char *str, const char *prefix);
+with open('fs/super.c', 'w') as f:
+    f.write(content)
+PYEOF
 
-#endif /* _LINUX_SUSFS_DEF_H */
-EOF
+rm -f fs/super.c.rej 2>/dev/null || true
 
-# Forcer l'include dans les fichiers qui plantent
-for f in fs/super.c fs/namespace.c fs/notify/fdinfo.c kernel/kallsyms.c; do
-  if [ -f "$f" ] && ! grep -q "susfs_def.h" "$f"; then
-    sed -i '1i #include <linux/susfs_def.h>' "$f"
-  fi
-done
+echo "=== Correction inconditionnelle de l'inclusion susfs_def.h dans fs/stat.c ==="
+python3 - << 'PYEOF'
+with open('fs/stat.c', 'r') as f:
+    content = f.read()
 
-# Stubs dans fs/susfs.c
-if [ -f fs/susfs.c ]; then
-  # Nettoyage éventuel
-  sed -i '/susfs_is_current_ksu_domain/,/^}/d' fs/susfs.c 2>/dev/null || true
-  sed -i '/susfs_is_sdcard_android_data_not_decrypted/d' fs/susfs.c 2>/dev/null || true
-  sed -i '/susfs_is_current_app_uid/,/^}/d' fs/susfs.c 2>/dev/null || true
-  sed -i '/susfs_is_current_proc_umounted/,/^}/d' fs/susfs.c 2>/dev/null || true
-  sed -i '/susfs_starts_with/,/^}/d' fs/susfs.c 2>/dev/null || true
+if '#include <linux/susfs_def.h>' not in content:
+    content = content.replace(
+        '#include <linux/uaccess.h>',
+        '#include <linux/uaccess.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif\n',
+        1
+    )
+    print("✅ susfs_def.h injecté dans fs/stat.c")
+else:
+    print("✅ susfs_def.h déjà présent dans fs/stat.c")
 
-  cat >> fs/susfs.c << 'EOF'
+with open('fs/stat.c', 'w') as f:
+    f.write(content)
+PYEOF
 
-/* ===== Stubs minimaux ===== */
-DEFINE_STATIC_KEY_TRUE(susfs_is_sdcard_android_data_not_decrypted);
-EXPORT_SYMBOL_GPL(susfs_is_sdcard_android_data_not_decrypted);
+echo "=== Correction inconditionnelle et robuste de fs/namespace.c (CL_COPY_MNT_NS) ==="
+python3 - << 'PYEOF'
+import re
 
-bool susfs_is_current_ksu_domain(void) { return false; }
-EXPORT_SYMBOL_GPL(susfs_is_current_ksu_domain);
+with open('fs/namespace.c', 'r') as f:
+    content = f.read()
 
-bool susfs_is_current_app_uid(void) { return false; }
-EXPORT_SYMBOL_GPL(susfs_is_current_app_uid);
+content = re.sub(r'^\s*n(?=#ifdef|#endif|#include|#define|extern)', '', content, flags=re.MULTILINE)
 
-bool susfs_is_current_proc_umounted(void) { return false; }
-EXPORT_SYMBOL_GPL(susfs_is_current_proc_umounted);
+if 'define CL_COPY_MNT_NS' not in content:
+    decl = '''
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#include <linux/susfs_def.h>
+extern bool susfs_is_current_ksu_domain(void);
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+#define CL_COPY_MNT_NS BIT(25)
+#endif
+'''
+    match = re.search(r'^#include\s+[^\n]+\n', content, flags=re.MULTILINE)
+    if match:
+        insert_pos = match.end()
+        content = content[:insert_pos] + decl + content[insert_pos:]
+        print("✅ CL_COPY_MNT_NS et déclarations injectées dans fs/namespace.c")
+    else:
+        print("❌ Aucun #include trouvé dans fs/namespace.c — injection impossible")
+else:
+    print("✅ CL_COPY_MNT_NS déjà présent dans fs/namespace.c")
 
-bool susfs_starts_with(const char *str, const char *prefix)
-{
-	size_t len = strlen(prefix);
-	return strncmp(str, prefix, len) == 0;
-}
-EXPORT_SYMBOL_GPL(susfs_starts_with);
-EOF
+with open('fs/namespace.c', 'w') as f:
+    f.write(content)
+PYEOF
+
+# Vérification stricte : aucun .rej ne doit persister
+if find . -name "*.rej" -type f | grep -q .; then
+    echo "❌ ÉCHEC CRITIQUE : Des rejets de patch SuSFS persistent."
+    find . -name "*.rej" -type f -exec echo "=== {} ===" \; -exec cat {} \;
+    exit 1
+fi
+echo "✅ Patch SuSFS appliqué avec succès (aucun rejet)."
+
+# Copie des fichiers source/headers SuSFS
+if [ -d "/tmp/jack_repo/Patches/fs" ]; then
+    cp -rn /tmp/jack_repo/Patches/fs/* fs/ 2>/dev/null || true
+fi
+if [ -d "/tmp/jack_repo/Patches/include/linux" ]; then
+    cp -rn /tmp/jack_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
-echo "✅ Déclarations SuSFS complètes injectées"
+find . -name "*.orig" -type f -delete 2>/dev/null || true
+
+# Makefile
+if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
+    echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
+    [ -f "fs/sus_su.c" ] && ! grep -q "sus_su.o" fs/Makefile && echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
+fi
+
+# Correction variable 'vma' non utilisée
+if [ -f "fs/proc/task_mmu.c" ]; then
+    sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
+fi
+
+# Symboles susfs
+if [ -f "fs/susfs.c" ] && ! grep -q "susfs_is_current_ksu_domain" fs/susfs.c; then
+    cat >> fs/susfs.c << 'SUSFS_EOF'
+
+#ifdef CONFIG_KSU_SUSFS
+bool susfs_is_current_ksu_domain(void)
+{
+    const struct cred *cred = current_cred();
+    return (cred->uid.val == 0 || cred->uid.val == 2000);
+}
+EXPORT_SYMBOL(susfs_is_current_ksu_domain);
+
+u32 susfs_ksu_sid = 0;
+EXPORT_SYMBOL(susfs_ksu_sid);
+
+u32 susfs_priv_app_sid = 0;
+EXPORT_SYMBOL(susfs_priv_app_sid);
+#endif
+SUSFS_EOF
+fi
+
+echo "✅ SuSFS (JackA1ltman mainline) intégré"
 
 # ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
@@ -579,9 +700,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
   echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
   echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
-  echo "# CONFIG_KSU_SUSFS_SUS_MAP is not set"
+  echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
   echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
-  echo "# CONFIG_KSU_SUSFS_ENABLE_LOG is not set"
+  echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
   echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
   echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
   echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
@@ -613,36 +734,141 @@ else
   exit 1
 fi
 
+# ==================== 7b. COMPILATION KSUD ====================
+echo "=== Compilation de ksud (ReSukiSU) ==="
+cd "$GITHUB_WORKSPACE"
+
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+
+rustup toolchain install nightly
+rustup default nightly
+rustup target add aarch64-linux-android
+
+wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+unzip -q android-ndk-r26d-linux.zip
+
+export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
+export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
+export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
+export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
+
+rm -rf "$GITHUB_WORKSPACE/ksud-src"
+git clone https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
+cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
+
+mkdir -p .cargo
+cat > .cargo/config.toml <<EOF
+[target.aarch64-linux-android]
+linker = "$AARCH64_CLANG_PATH"
+
+[env]
+CC_aarch64_linux_android = "$AARCH64_CLANG_PATH"
+CXX_aarch64_linux_android = "$AARCH64_CLANGXX_PATH"
+AR_aarch64_linux_android = "$AR_PATH"
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
+EOF
+
+export CARGO_NET_GIT_FETCH_WITH_CLI=true
+cargo +nightly build --release --target aarch64-linux-android
+
+KSUD_BINARY=$(find "$GITHUB_WORKSPACE/ksud-src" -type f -name "ksud" -executable 2>/dev/null | head -1)
+
+if [ -z "$KSUD_BINARY" ]; then
+    echo "❌ ksud introuvable"
+    exit 1
+fi
+
+echo "✅ ksud trouvé : $KSUD_BINARY"
+cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
+chmod 755 "$GITHUB_WORKSPACE/ksud"
+
+cd "$GITHUB_WORKSPACE"
+
 # ==================== 8. REPACK ====================
 echo "=== Téléchargement des images stock ==="
 cd $GITHUB_WORKSPACE
 
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
-  echo "Fallback mkbootimg..."
-  mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img \
-    --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 \
-    --ramdisk_offset 0x01000000 --tags_offset 0x00000100 \
-    --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
-}
-
+curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || true
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
 
-if [ -f "boot-stock.img" ]; then
-  echo "=== Repack avec magiskboot ==="
-  mkdir -p repack
-  cp boot-stock.img repack/boot.img
-  wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
-  unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
-  mv lib/x86_64/libmagiskboot.so repack/magiskboot
-  chmod +x repack/magiskboot
-  rm -rf Magisk-v27.0.apk lib/
-  cd repack
-  ./magiskboot unpack boot.img
-  cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
-  ./magiskboot repack boot.img new-boot.img
-  mv new-boot.img ../final_boot.img
-  cd ..
+wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
+unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
+mkdir -p repack
+mv lib/x86_64/libmagiskboot.so repack/magiskboot
+chmod +x repack/magiskboot
+rm -rf Magisk-v27.0.apk lib/
+
+cp boot-stock.img repack/boot.img
+cd repack
+./magiskboot unpack boot.img
+cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
+
+echo "=== Installation de ksud dans le ramdisk ==="
+./magiskboot cpio ramdisk.cpio \
+  "mkdir 0755 data" \
+  "mkdir 0755 data/adb" \
+  "mkdir 0755 data/adb/ksu" \
+  "mkdir 0755 data/adb/ksu/bin" \
+  "add 0755 data/adb/ksu/bin/ksud $GITHUB_WORKSPACE/ksud"
+
+cp "$GITHUB_WORKSPACE/ksud" local_su_binary
+chmod 755 local_su_binary
+./magiskboot cpio ramdisk.cpio \
+  "mkdir 0755 system" \
+  "mkdir 0755 system/bin" \
+  "add 06755 system/bin/su ./local_su_binary"
+rm -f local_su_binary
+
+echo "=== Ajout du déclencheur init.rc ==="
+INIT_RC_PATHS=(
+  "first_stage_ramdisk/init.rc"
+  "system/etc/init/hw/init.rc"
+  "init.rc"
+)
+
+INIT_RC_FOUND=""
+for CANDIDATE in "${INIT_RC_PATHS[@]}"; do
+  echo "=== Tentative d'extraction de $CANDIDATE ==="
+  ./magiskboot cpio ramdisk.cpio "extract $CANDIDATE /tmp/init.rc" 2>/dev/null && \
+    [ -f /tmp/init.rc ] && [ -s /tmp/init.rc ] && {
+      INIT_RC_FOUND="$CANDIDATE"
+      echo "✅ init.rc trouvé à : $CANDIDATE"
+      break
+    }
+  rm -f /tmp/init.rc
+done
+
+if [ -z "$INIT_RC_FOUND" ]; then
+  INIT_RC_FOUND="first_stage_ramdisk/init.rc"
+  cat > /tmp/init.rc << 'RCEOF'
+# init.rc créé par ReSukiSU build
+RCEOF
 fi
+
+if ! grep -q "service ksud" /tmp/init.rc; then
+  cat >> /tmp/init.rc << 'RCEOF'
+
+on post-fs-data
+    start ksud
+
+service ksud /data/adb/ksu/bin/ksud daemon
+    user root
+    group root
+    seclabel u:r:su:s0
+    disabled
+    oneshot
+RCEOF
+  echo "✅ Bloc service ksud ajouté"
+fi
+
+./magiskboot cpio ramdisk.cpio "add 0750 $INIT_RC_FOUND /tmp/init.rc"
+
+./magiskboot repack boot.img new-boot.img
+mv new-boot.img ../final_boot.img
+cd ..
 
 # ==================== 9. SORTIE ====================
 echo "=== Copie vers output ==="
@@ -650,6 +876,7 @@ mkdir -p output
 cp final_boot.img output/ReSukiSU-SusFS-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
+cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
 
 echo "=== BUILD TERMINÉ ==="
 ls -lh output/
