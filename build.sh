@@ -239,36 +239,85 @@ fi
 echo "✅ SuSFS (JackA1ltman mainline) intégré, sans stub à return-false fabriqué"
 
 # ==================== 3b. HOOK setresuid OBLIGATOIRE (Inline Hook) ====================
-echo "=== Injection du hook ksu_handle_setresuid (requis par ReSukiSU Inline Hook) ==="
+echo "=== Injection robuste du hook ksu_handle_setresuid ==="
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
-# 1. Déclaration externe
-if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
-    sed -i '/^SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)/i\
-#ifdef CONFIG_KSU\n\
-extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);\n\
-#endif' kernel/sys.c
-fi
+python3 - << 'PYEOF'
+import re
 
-# 2. Appel réel dans setresuid
-if ! grep -q "ksu_handle_setresuid(ruid, euid, suid)" kernel/sys.c; then
-    # Pattern le plus courant sur 4.19 (après les checks uid_valid)
-    sed -i '/if ((ruid != (uid_t) -1) && !uid_valid(kruid))/i\
-#ifdef CONFIG_KSU_SUSFS\n\
-\tif (ksu_handle_setresuid(ruid, euid, suid)) {\n\
-\t\tpr_info("Something wrong with ksu_handle_setresuid()\\n");\n\
-\t}\n\
-#endif' kernel/sys.c
-fi
+with open('kernel/sys.c', 'r') as f:
+    src = f.read()
 
-# Vérification stricte
-if grep -q "ksu_handle_setresuid" kernel/sys.c; then
-    echo "✅ ksu_handle_setresuid présent dans kernel/sys.c"
-    grep -n "ksu_handle_setresuid" kernel/sys.c
-else
-    echo "❌ Échec injection ksu_handle_setresuid"
-    exit 1
-fi
+# --- 1. Déclaration ---
+if 'extern int ksu_handle_setresuid' not in src:
+    # On l'ajoute juste avant la définition de setresuid
+    src = re.sub(
+        r'(SYSCALL_DEFINE3\s*\(\s*setresuid\b)',
+        r'''#ifdef CONFIG_KSU
+extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
+#endif
+
+\1''',
+        src,
+        count=1
+    )
+    print("✅ Déclaration ajoutée")
+else:
+    print("✅ Déclaration déjà présente")
+
+# --- 2. Appel (uniquement dans setresuid) ---
+if 'ksu_handle_setresuid(ruid, euid, suid)' not in src:
+    # On cherche le bloc setresuid complet et on injecte après les 3 checks uid_valid
+    pattern = re.compile(
+        r'(SYSCALL_DEFINE3\s*\(\s*setresuid\s*,\s*uid_t\s*,\s*ruid\s*,\s*uid_t\s*,\s*euid\s*,\s*uid_t\s*,\s*suid\s*\)\s*\{.*?'
+        r'if\s*\(\s*\(suid\s*!=\s*\(uid_t\)\s*-1\)\s*&&\s*!uid_valid\s*\(\s*ksuid\s*\)\s*\)\s*\n\s*return\s*-EINVAL\s*;)',
+        re.DOTALL
+    )
+
+    def inject(m):
+        return m.group(1) + '''
+#ifdef CONFIG_KSU_SUSFS
+	if (ksu_handle_setresuid(ruid, euid, suid)) {
+		pr_info("Something wrong with ksu_handle_setresuid()\\n");
+	}
+#endif'''
+
+    new_src, n = pattern.subn(inject, src, count=1)
+
+    if n == 0:
+        # Fallback très simple et sûr : juste après l'ouverture de la fonction
+        new_src = re.sub(
+            r'(SYSCALL_DEFINE3\s*\(\s*setresuid\s*,\s*uid_t\s*,\s*ruid\s*,\s*uid_t\s*,\s*euid\s*,\s*uid_t\s*,\s*suid\s*\)\s*\{)',
+            r'''\1
+#ifdef CONFIG_KSU_SUSFS
+	if (ksu_handle_setresuid(ruid, euid, suid)) {
+		pr_info("Something wrong with ksu_handle_setresuid()\\n");
+	}
+#endif''',
+            src,
+            count=1
+        )
+        print("✅ Appel injecté (fallback début de fonction)")
+    else:
+        print("✅ Appel injecté après les checks uid_valid")
+        src = new_src
+else:
+    print("✅ Appel déjà présent")
+    new_src = src
+
+with open('kernel/sys.c', 'w') as f:
+    f.write(new_src)
+
+# Vérification
+if 'ksu_handle_setresuid' in new_src:
+    print("✅ Présence confirmée dans kernel/sys.c")
+else:
+    print("❌ Échec")
+    exit(1)
+PYEOF
+
+echo "=== Contenu injecté ==="
+grep -n -A2 -B2 "ksu_handle_setresuid" kernel/sys.c || true
 
 # ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
