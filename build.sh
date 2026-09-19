@@ -17,25 +17,26 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 cd "$GITHUB_WORKSPACE"
 
 # ==================== 1. CLONAGE DU NOYAU ====================
-echo "=== Clonage du kernel Albanel22 lineage-23.2-tactile (Dernier commit de la branche, sans épinglage pour garder le tactile) ==="
+echo "=== Clonage du kernel Albanel22 lineage-23.2-tactile ==="
 git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git \
   -b lineage-23.2-tactile kernel_sources
 
 cd kernel_sources
 
-echo "Commit kernel_sources actuel (tip de la branche) :"
+echo "Commit kernel_sources actuel :"
 git log --oneline -1
 
 # ==================== 2. INTÉGRATION ReSukiSU ====================
-echo "=== Intégration ReSukiSU (épinglée à la release MOTOROLA du 18 août 2026, 03:29 UTC) ==="
+echo "=== Intégration ReSukiSU (Driver Kernel) ==="
 
 rm -rf drivers/kernelsu kernelSU susfs4ksu KernelSU || true
 rm -rf /tmp/resukisu_pin
 
 git clone https://github.com/ReSukiSU/ReSukiSU.git /tmp/resukisu_pin
 
+# On garde l'épinglage du driver au 17 août pour la cohérence avec le kernel
 RESUKISU_COMMIT=$(cd /tmp/resukisu_pin && git rev-list -n 1 --before="2026-08-17 23:59:59" main)
-echo "Commit ReSukiSU épinglé : $RESUKISU_COMMIT"
+echo "Commit ReSukiSU (driver) épinglé : $RESUKISU_COMMIT"
 
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s -- "$RESUKISU_COMMIT"
 
@@ -708,18 +709,11 @@ else
 fi
 
 # ==================== 7b. COMPILATION KSUD (ReSukiSU) ====================
-echo "=== Compilation de ksud (ReSukiSU) ==="
+# SOLUTION PROPRE : On utilise le commit qui a corrigé les dépendances Git
+# Commit 7e92d45ed5c7e0ed6e3e0f7e87d1cea510d068ea (fix Kernel-SU -> ReSukiSU forks)
+echo "=== Compilation de ksud (ReSukiSU - avec fix dépendances) ==="
 
 cd "$GITHUB_WORKSPACE"
-
-# Configuration Git pour éviter les invites
-if [ -n "${GITHUB_TOKEN:-}" ]; then
-  git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
-fi
-
-export GIT_TERMINAL_PROMPT=0
-export CARGO_NET_GIT_FETCH_WITH_CLI=true
-export CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 
 # Installation Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -745,179 +739,15 @@ git clone https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
 
 cd "$GITHUB_WORKSPACE/ksud-src"
 
-echo "=== Épinglage de ksud au même commit ReSukiSU que le driver kernel : $RESUKISU_COMMIT ==="
-git checkout "$RESUKISU_COMMIT"
+# On checkout le commit spécifique qui corrige les URLs Git (fix de sliva/Telegram)
+KSUD_FIX_COMMIT="7e92d45ed5c7e0ed6e3e0f7e87d1cea510d068ea"
+echo "=== Checkout du commit fix ksud : $KSUD_FIX_COMMIT ==="
+git checkout "$KSUD_FIX_COMMIT"
 
-# ----------------------------------------------------------------------
-# CORRECTION CRITIQUE & ÉLÉGANTE :
-# Utilisation de [patch] dans .cargo/config.toml pour rediriger les URLs Git
-# inaccessibles (Kernel-SU) vers les forks publics (ReSukiSU).
-# Cette méthode est officielle, propre, et s'applique à tout le workspace.
-# ----------------------------------------------------------------------
-echo "=== Configuration des redirections Git via [patch] Cargo (méthode élégante) ==="
-
-mkdir -p "$HOME/.cargo"
-cat > "$HOME/.cargo/config.toml" << 'CARGO_CONFIG_EOF'
-# Redirection élégante des forks Git inaccessibles (Kernel-SU -> ReSukiSU)
-# Cargo utilise [patch] pour remplacer globalement les sources Git cassées
-
-[patch."https://github.com/Kernel-SU/rustix.git"]
-rustix = { git = "https://github.com/ReSukiSU/rustix.git", rev = "4a53fbc7cb7a07cabe87125cc21dbc27db316259" }
-
-[patch."https://github.com/Kernel-SU/rustix"]
-rustix = { git = "https://github.com/ReSukiSU/rustix.git", rev = "4a53fbc7cb7a07cabe87125cc21dbc27db316259" }
-
-[patch."https://github.com/Kernel-SU/ksu_props.git"]
-prop-rs-android = { git = "https://github.com/ReSukiSU/ksu_props.git" }
-prop-rs = { git = "https://github.com/ReSukiSU/ksu_props.git" }
-
-[patch."https://github.com/Kernel-SU/ksu_props"]
-prop-rs-android = { git = "https://github.com/ReSukiSU/ksu_props.git" }
-prop-rs = { git = "https://github.com/ReSukiSU/ksu_props.git" }
-CARGO_CONFIG_EOF
-
-echo "✅ Configuration [patch] Cargo créée dans $HOME/.cargo/config.toml"
-
-# Remplacement de adb_client et java-properties par crates.io (via Python)
-echo "=== Remplacement de adb_client et java-properties par crates.io ==="
-
-python3 - << 'PYEOF'
-import os
-import re
-
-ROOT = "."
-SKIP_DIRS = {".git", "target", ".cargo", "out"}
-
-crates_replacements = {
-    "adb_client": "3.2.3",
-    "java-properties": "2.0.0",
-    "java_properties": "2.0.0",
-}
-
-def norm(name):
-    return name.replace("-", "_").replace(".", "_").lower()
-
-def match_crate(dep_name, repo_name):
-    dn = norm(dep_name)
-    rn = norm(repo_name)
-    for crate, version in crates_replacements.items():
-        cn = norm(crate)
-        if cn == dn or cn == rn:
-            return crate, version
-    return None
-
-def repo_from_block(block):
-    m = re.search(r'github\.com/Kernel-SU/([A-Za-z0-9_.-]+)', block)
-    if not m: return None
-    repo = m.group(1)
-    if repo.endswith(".git"): repo = repo[:-4]
-    return repo
-
-def clean_inline_table(table, dep_name, crate, version):
-    for key in ("git", "branch", "tag", "rev", "version", "package"):
-        table = re.sub(rf',?[ \t]*{key}[ \t]*=[ \t]*"[^"]*"', "", table)
-    table = re.sub(r'\{[ \t]*,', "{", table)
-    table = re.sub(r',[ \t]*\}', " }", table)
-    table = re.sub(r',[ \t]*,', ",", table)
-    attrs = f'version = "{version}"'
-    if norm(dep_name) != norm(crate):
-        attrs = f'package = "{crate}", {attrs}'
-    table = re.sub(r'\{[ \t]*', "{ " + attrs + ", ", table, count=1)
-    table = re.sub(r',[ \t]*\}', " }", table)
-    return table
-
-def patch_file(path):
-    with open(path, "r", encoding="utf-8") as f:
-        content = f.read()
-    original = content
-    lines = content.splitlines(keepends=True)
-    out = []
-    i = 0
-
-    while i < len(lines):
-        line = lines[i]
-        if "Kernel-SU" in line and "git" in line:
-            m_inline = re.match(r'^([ \t]*)([A-Za-z0-9_.-]+)[ \t]*=[ \t]*\{', line)
-            if m_inline:
-                indent = m_inline.group(1)
-                dep_name = m_inline.group(2)
-                block = ""
-                depth = 0
-                j = i
-                while j < len(lines):
-                    block += lines[j]
-                    depth += lines[j].count("{") - lines[j].count("}")
-                    j += 1
-                    if depth <= 0: break
-                repo = repo_from_block(block)
-                if repo:
-                    matched = match_crate(dep_name, repo)
-                    if matched:
-                        crate, version = matched
-                        new_block = clean_inline_table(block, dep_name, crate, version)
-                        if not new_block.endswith("\n"): new_block += "\n"
-                        out.append(new_block)
-                        print(f"✅ [{path}] {dep_name} -> crates.io {crate} {version}")
-                        i = j
-                        continue
-                out.append(block)
-                i = j
-                continue
-
-            m_section = re.match(r'^\[[^\]\n]*dependencies\.([A-Za-z0-9_.-]+)\]\s*$', line)
-            if m_section:
-                dep_name = m_section.group(1)
-                block = [line]
-                j = i + 1
-                while j < len(lines) and not lines[j].lstrip().startswith("["):
-                    block.append(lines[j])
-                    j += 1
-                block_text = "".join(block)
-                repo = repo_from_block(block_text)
-                if repo:
-                    matched = match_crate(dep_name, repo)
-                    if matched:
-                        crate, version = matched
-                        new_block = line
-                        if norm(dep_name) != norm(crate):
-                            new_block += f'package = "{crate}"\n'
-                        new_block += f'version = "{version}"\n'
-                        for bl in block[1:]:
-                            if re.match(r'^[ \t]*(git|branch|tag|rev|version|package)[ \t]*=', bl): continue
-                            new_block += bl
-                        out.append(new_block)
-                        print(f"✅ [{path}] {dep_name} (section) -> crates.io {crate} {version}")
-                        i = j
-                        continue
-                out.extend(block)
-                i = j
-                continue
-        out.append(line)
-        i += 1
-
-    content = "".join(out)
-    if content != original:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-
-count = 0
-for dirpath, dirnames, filenames in os.walk(ROOT):
-    dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-    for filename in filenames:
-        if filename == "Cargo.toml":
-            patch_file(os.path.join(dirpath, filename))
-            count += 1
-print(f"✅ {count} fichier(s) Cargo.toml analysé(s) pour crates.io")
-PYEOF
-
-echo "=== Purge des anciens locks et du cache Cargo ==="
-find "$GITHUB_WORKSPACE/ksud-src" -type f -name Cargo.lock -delete
-rm -rf ~/.cargo/git/db/*Kernel-SU* ~/.cargo/git/checkouts/*Kernel-SU*
-echo "✅ Locks et cache Cargo purgés."
-
+# Configuration Cargo pour le cross-compilation Android
 cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
-
 mkdir -p .cargo
+
 cat > .cargo/config.toml <<EOF
 [target.aarch64-linux-android]
 linker = "$AARCH64_CLANG_PATH"
@@ -929,35 +759,16 @@ AR_aarch64_linux_android = "$AR_PATH"
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
 EOF
 
-echo "=== Lancement du build cargo ksud ==="
-KSUD_BUILD_LOG="$GITHUB_WORKSPACE/ksud_cargo_build.log"
-
-if ! (set -o pipefail; cargo +nightly build --release --target aarch64-linux-android 2>&1 | tee "$KSUD_BUILD_LOG"); then
-  if grep -Eq "could not read Username|failed to authenticate|unable to update" "$KSUD_BUILD_LOG"; then
-    echo "⚠️ Échec git/auth détecté, tentative avec CARGO_NET_GIT_FETCH_WITH_CLI=false"
-    if ! (set -o pipefail; CARGO_NET_GIT_FETCH_WITH_CLI=false cargo +nightly build --release --target aarch64-linux-android 2>&1 | tee -a "$KSUD_BUILD_LOG"); then
-      echo "❌ Échec du build cargo de ksud"
-      exit 1
-    fi
-  else
-    echo "❌ Échec du build cargo de ksud"
-    exit 1
-  fi
+echo "=== Lancement du build cargo ksud (propre, sans hacks) ==="
+if ! cargo +nightly build --release --target aarch64-linux-android; then
+  echo "❌ Échec du build cargo de ksud"
+  exit 1
 fi
 
 echo "=== Recherche du binaire ksud ==="
-KSUD_BINARY=""
-for candidate in \
-  "$GITHUB_WORKSPACE/ksud-src/userspace/ksud/target/aarch64-linux-android/release/ksud" \
-  "$GITHUB_WORKSPACE/ksud-src/target/aarch64-linux-android/release/ksud"
-do
-  if [ -f "$candidate" ]; then
-    KSUD_BINARY="$candidate"
-    break
-  fi
-done
+KSUD_BINARY="$GITHUB_WORKSPACE/ksud-src/userspace/ksud/target/aarch64-linux-android/release/ksud"
 
-if [ -z "$KSUD_BINARY" ]; then
+if [ ! -f "$KSUD_BINARY" ]; then
   KSUD_BINARY=$(find "$GITHUB_WORKSPACE/ksud-src" -type f -name ksud 2>/dev/null | head -1)
 fi
 
@@ -1007,7 +818,7 @@ if [ -f "boot-stock.img" ]; then
   ./magiskboot unpack boot.img
   cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
 
-  echo "=== Installation de ksud dans le ramdisk (chemin canonique /data/adb/ksu/bin/ksud) ==="
+  echo "=== Installation de ksud dans le ramdisk ==="
 
   ./magiskboot cpio ramdisk.cpio \
     "mkdir 0755 data" \
@@ -1031,7 +842,7 @@ if [ -f "boot-stock.img" ]; then
   ./magiskboot cpio ramdisk.cpio "extract init.rc /tmp/init.rc"
 
   if [ ! -f /tmp/init.rc ]; then
-    echo "❌ init.rc introuvable dans le ramdisk — impossible d'ajouter le déclencheur ksud"
+    echo "❌ init.rc introuvable dans le ramdisk"
     exit 1
   fi
 
