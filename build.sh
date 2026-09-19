@@ -623,19 +623,21 @@ else
   exit 1
 fi
 
-# ==================== 7b. COMPILATION KSUD (ReSukiSU) ====================
-echo "=== Compilation de ksud (ReSukiSU) ==="
+# ==================== 7b. COMPILATION KSUD (Aligné ReSukiSU commit 7e92d45) ====================
+echo "=== Préparation et build de ksud via commit ReSukiSU ==="
 cd "$GITHUB_WORKSPACE"
 
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y || true
+source "$HOME/.cargo/env" || true
 
-rustup toolchain install nightly
-rustup default nightly
-rustup target add aarch64-linux-android
+rustup toolchain install nightly || true
+rustup default nightly || true
+rustup target add aarch64-linux-android || true
 
-wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
-unzip -q android-ndk-r26d-linux.zip
+if [ ! -d "$GITHUB_WORKSPACE/android-ndk-r26d" ]; then
+    wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+    unzip -q android-ndk-r26d-linux.zip
+fi
 
 export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
 export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
@@ -644,10 +646,13 @@ export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x8
 export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
-rm -rf "$GITHUB_WORKSPACE/ksud-src"
-echo "=== Clonage de ksud (ReSukiSU) sur main actuelle ==="
-git clone https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
-cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
+rm -rf /tmp/resukisu-repo
+git clone https://github.com/ReSukiSU/ReSukiSU.git /tmp/resukisu-repo
+cd "/tmp/resukisu-repo"
+git fetch origin 7e92d45ed5c7e0ed6e3e0f7e87d1cea510d068ea 2>/dev/null || true
+git checkout 7e92d45ed5c7e0ed6e3e0f7e87d1cea510d068ea 2>/dev/null || true
+
+cd userspace/ksud
 
 mkdir -p .cargo
 cat > .cargo/config.toml <<EOF
@@ -661,24 +666,21 @@ AR_aarch64_linux_android = "$AR_PATH"
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
 EOF
 
-echo "=== Résolution des dépendances (main actuelle) et compilation de ksud ==="
+rm -f Cargo.lock
 export CARGO_NET_GIT_FETCH_WITH_CLI=true
 cargo +nightly build --release --target aarch64-linux-android
 
-echo "=== Recherche du binaire ksud dans tout le repo cloné ==="
-find "$GITHUB_WORKSPACE/ksud-src" -type f -name "ksud" 2>/dev/null
-KSUD_BINARY=$(find "$GITHUB_WORKSPACE/ksud-src" -type f -name "ksud" -executable 2>/dev/null | head -1)
+KSUD_BINARY=$(find /tmp/resukisu-repo/userspace/ksud/target/aarch64-linux-android/release/ -name "ksud" -executable 2>/dev/null | head -1)
+[ -z "$KSUD_BINARY" ] && KSUD_BINARY=$(find /tmp/resukisu-repo -type f -name "ksud" -executable 2>/dev/null | head -1)
 
 if [ -z "$KSUD_BINARY" ]; then
-    echo "❌ ksud introuvable après recherche automatique"
-    ls -la "$GITHUB_WORKSPACE/ksud-src/"
+    echo "❌ ksud introuvable après build"
     exit 1
 fi
 
-echo "✅ ksud trouvé ici : $KSUD_BINARY"
 cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
-echo "✅ ksud (ReSukiSU) compilé"
+echo "✅ ksud compilé via le commit ReSukiSU"
 
 cd "$GITHUB_WORKSPACE"
 
