@@ -238,6 +238,38 @@ fi
 
 echo "✅ SuSFS (JackA1ltman mainline) intégré, sans stub à return-false fabriqué"
 
+# ==================== 3b. HOOK setresuid OBLIGATOIRE (Inline Hook) ====================
+echo "=== Injection du hook ksu_handle_setresuid (requis par ReSukiSU Inline Hook) ==="
+cd "$GITHUB_WORKSPACE/kernel_sources"
+
+# 1. Déclaration externe
+if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
+    sed -i '/^SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)/i\
+#ifdef CONFIG_KSU\n\
+extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);\n\
+#endif' kernel/sys.c
+fi
+
+# 2. Appel réel dans setresuid
+if ! grep -q "ksu_handle_setresuid(ruid, euid, suid)" kernel/sys.c; then
+    # Pattern le plus courant sur 4.19 (après les checks uid_valid)
+    sed -i '/if ((ruid != (uid_t) -1) && !uid_valid(kruid))/i\
+#ifdef CONFIG_KSU_SUSFS\n\
+\tif (ksu_handle_setresuid(ruid, euid, suid)) {\n\
+\t\tpr_info("Something wrong with ksu_handle_setresuid()\\n");\n\
+\t}\n\
+#endif' kernel/sys.c
+fi
+
+# Vérification stricte
+if grep -q "ksu_handle_setresuid" kernel/sys.c; then
+    echo "✅ ksu_handle_setresuid présent dans kernel/sys.c"
+    grep -n "ksu_handle_setresuid" kernel/sys.c
+else
+    echo "❌ Échec injection ksu_handle_setresuid"
+    exit 1
+fi
+
 # ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
 export ARCH=arm64
@@ -374,66 +406,4 @@ curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/bo
     --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
 
-curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
-
-if [ -f "boot-stock.img" ]; then
-  mkdir -p repack
-  cp boot-stock.img repack/boot.img
-
-  wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
-  unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
-  mv lib/x86_64/libmagiskboot.so repack/magiskboot
-  chmod +x repack/magiskboot
-  rm -rf Magisk-v27.0.apk lib/
-
-  cd repack
-
-  set +e
-  ./magiskboot unpack boot.img
-  UNPACK_EXIT=$?
-  set -e
-
-  if [ ! -f "kernel" ] || [ ! -f "ramdisk.cpio" ]; then
-    echo "❌ Échec réel du unpack (exit magiskboot: $UNPACK_EXIT)"
-    exit 1
-  fi
-
-  cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
-
-  echo "=== Installation de ksud (chemin /data/adb/ksud/ksud, requis par sucompat) ==="
-  ./magiskboot cpio ramdisk.cpio \
-    "mkdir 0755 data" \
-    "mkdir 0755 data/adb" \
-    "mkdir 0755 data/adb/ksud" \
-    "add 0755 data/adb/ksud/ksud $GITHUB_WORKSPACE/ksud"
-
-  echo "=== Installation de SU ==="
-  cp "$GITHUB_WORKSPACE/ksud" local_su_binary
-  chmod 755 local_su_binary
-  ./magiskboot cpio ramdisk.cpio \
-    "mkdir 0755 system" \
-    "mkdir 0755 system/bin" \
-    "add 06755 system/bin/su ./local_su_binary"
-  rm -f local_su_binary
-
-  echo "=== Vérification SU/ksud dans ramdisk ==="
-  ./magiskboot cpio ramdisk.cpio list | grep -E '(^|/)(su|ksud)$' || true
-
-  ./magiskboot repack boot.img new-boot.img || {
-    echo "❌ Échec du repack"
-    exit 1
-  }
-  mv new-boot.img ../final_boot.img
-  cd ..
-fi
-
-# ==================== 9. SORTIE ====================
-echo "=== Copie vers output ==="
-mkdir -p output
-cp final_boot.img output/ReSukiSU-SusFS-boot.img
-cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
-cp kernel_sources/build.log output/
-cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
-
-echo "=== BUILD TERMINÉ ==="
-ls -lh output/
+curl -fLo 
