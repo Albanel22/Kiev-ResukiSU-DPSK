@@ -586,6 +586,30 @@ sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
+# ==================== 6b. VÉRIFICATION CONFIG KSU ====================
+echo ""
+echo "=== VÉRIFICATION CONFIG KSU ==="
+
+# 1. CONFIG_KSU dans .config
+echo "--- CONFIG_KSU dans out/.config ---"
+grep -E "^CONFIG_KSU" out/.config
+
+# 2. drivers/kernelsu existe-t-il ?
+echo "--- drivers/kernelsu ---"
+ls -la drivers/kernelsu/ 2>/dev/null | head -10
+
+# 3. drivers/Makefile contient kernelsu ?
+echo "--- drivers/Makefile ---"
+grep -n "kernelsu" drivers/Makefile 2>/dev/null || echo "❌ kernelsu absent"
+
+# 4. drivers/Kconfig contient kernelsu ?
+echo "--- drivers/Kconfig ---"
+grep -n "kernelsu" drivers/Kconfig 2>/dev/null || echo "❌ kernelsu/Kconfig absent"
+
+# 5. Les .o de kernelsu sont-ils construits ?
+echo "--- kernelsu .o construits ---"
+find out -name "*.o" -path "*kernelsu*" 2>/dev/null | head -20
+
 # ==================== 7. COMPILATION ====================
 echo "=== Compilation finale ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
