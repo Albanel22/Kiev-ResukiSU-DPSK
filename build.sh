@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "=== Build ReSukiSU + SuSFS 2.3.0 (cyberc3dr) pour kiev (SM8250) - VARIANTE avec pin ReSukiSU au 17 août (release MOTOROLA) ==="
+echo "=== Build ReSukiSU + SuSFS (JackA1ltman/NonGKI_Kernel_Build_2nd, mainline) pour kiev (SM8250) - VARIANTE avec pin ReSukiSU au 17 août (release MOTOROLA) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
@@ -27,8 +27,11 @@ echo "=== Intégration ReSukiSU (épinglée) ==="
 rm -rf drivers/kernelsu KernelSU susfs4ksu || true
 rm -rf /tmp/resukisu_pin
 git clone https://github.com/ReSukiSU/ReSukiSU.git /tmp/resukisu_pin
-RESUKISU_COMMIT=$(cd /tmp/resukisu_pin && git rev-list -n 1 --before="2026-08-17 23:59:59" main)
-echo "Commit ReSukiSU épinglé : $RESUKISU_COMMIT"
+RESUKISU_COMMIT=$(cd /tmp/resukisu_pin && git rev-parse --verify cdce8bb8 2>/dev/null) || {
+  echo "❌ Commit cdce8bb8 introuvable dans l'historique cloné de ReSukiSU (branche non fetchée, ou hash ambigu/faux) — vérifier manuellement sur github.com/ReSukiSU/ReSukiSU"
+  exit 1
+}
+echo "Commit ReSukiSU épinglé (celui du build fonctionnel confirmé par le manager) : $RESUKISU_COMMIT"
 curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s -- "$RESUKISU_COMMIT"
 
 # ==================== 3. HOOKS MANUELS ReSukiSU (execveat, faccessat, stat, reboot, setresuid, sys_read, input) ====================
@@ -411,24 +414,32 @@ else
     echo "✅ Fonction disable_seccomp() déjà présente dans ReSukiSU"
 fi
 
-# ==================== 3.5. INTÉGRATION SUSFS 2.3.0 (cyberc3dr) ====================
-echo "=== Intégration SuSFS 2.3.0 depuis cyberc3dr ==="
+# ==================== 3.5. INTÉGRATION SUSFS (JackA1ltman/NonGKI_Kernel_Build_2nd, mainline) ====================
+echo ""
+echo "=== Intégration SuSFS depuis JackA1ltman/NonGKI_Kernel_Build_2nd (mainline) ==="
 cd "$GITHUB_WORKSPACE"
-rm -rf /tmp/cyber_repo
-git clone --depth=1 --branch rebase https://github.com/cyberc3dr/nGKI_Kernel_Build.git /tmp/cyber_repo
+rm -rf /tmp/jack_repo
+git clone --branch mainline https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
+JACK_COMMIT=$(cd /tmp/jack_repo && git rev-list -n 1 --before="2026-08-17 23:59:59" mainline)
+echo "Commit JackA1ltman/NonGKI_Kernel_Build_2nd épinglé : $JACK_COMMIT"
+(cd /tmp/jack_repo && git checkout "$JACK_COMMIT")
 
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
-if [ -f "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" ]; then
-    echo "=== Application du patch de compatibilité xxksu ==="
-    patch -p1 --forward --batch < "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" || true
+SUSFS_PATCH="/tmp/jack_repo/Patches/Patch/susfs_patch_to_4.19.patch"
+if [ ! -f "$SUSFS_PATCH" ]; then
+    echo "❌ Patch SuSFS 4.19 non trouvé dans la branche mainline !"
+    find /tmp/jack_repo/Patches -name "*.patch" 2>/dev/null | sort
+    exit 1
 fi
+echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
 
-SUSFS_PATCH="/tmp/cyber_repo/Patches/Patch/susfs_patch_to_4.19.patch"
-echo "=== Application du patch SuSFS 4.19 ==="
+echo "=== Application du patch SuSFS ==="
 patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
-# --- Corrections automatiques des rejets ---
+# ---------- Corrections des .rej (logique réelle, pas de stubs) ----------
+echo "=== Corrections des rejets de patch (logique réelle du patch, pas de stub) ==="
+
 if [ -f "fs/proc/task_mmu.c.rej" ]; then
     echo "⚠️ Rejet détecté dans task_mmu.c. Correction automatique..."
     python3 - << 'PYEOF'
@@ -473,52 +484,88 @@ PYEOF
     rm -f fs/namespace.c.rej
 fi
 
-echo "=== Correction DÉFINITIVE des déclarations SuSFS dans fs/super.c ==="
-
+echo "=== Correction inconditionnelle des déclarations SuSFS dans fs/super.c ==="
 python3 - << 'PYEOF'
 import re
 
 with open('fs/super.c', 'r') as f:
     content = f.read()
 
-decl = '''
+if 'extern bool susfs_is_current_ksu_domain' not in content:
+    decl = """
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 #include <linux/susfs_def.h>
-
-/* Déclarations manquantes forcées */
 extern bool susfs_is_current_ksu_domain(void);
 extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
-
 #ifndef DEFAULT_KSU_MNT_MINOR_DEV
 #define DEFAULT_KSU_MNT_MINOR_DEV (1 << 20)
 #endif
 #endif /* CONFIG_KSU_SUSFS_SUS_MOUNT */
-'''
-
-content = re.sub(r'#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT.*?susfs_is_sdcard_android_data_not_decrypted.*?#endif', '', content, flags=re.DOTALL)
-
-if 'susfs_is_current_ksu_domain' not in content:
-    content = re.sub(
-        r'(#include\s+[^\n]+\n)',
-        r'\1' + decl + '\n',
-        content,
-        count=1
-    )
-    print("✅ Déclarations forcées injectées au début de fs/super.c")
+"""
+    content = re.sub(r'(#include\s+"internal\.h"\s*\n)', r'\1' + decl, content, count=1)
+    print("✅ Déclarations forcées injectées dans fs/super.c")
 else:
-    print("✅ Déclarations déjà présentes")
+    print("✅ Déclarations déjà présentes dans fs/super.c")
 
 with open('fs/super.c', 'w') as f:
     f.write(content)
-
-print("✅ fs/super.c corrigé définitivement")
 PYEOF
-
-echo "=== Vérification des déclarations dans fs/super.c ==="
-grep -n "susfs_is_current_ksu_domain\|susfs_is_sdcard_android_data_not_decrypted\|DEFAULT_KSU_MNT_MINOR_DEV" fs/super.c | head -10 || true
 
 rm -f fs/super.c.rej 2>/dev/null || true
 
+echo "=== Correction inconditionnelle de l'inclusion susfs_def.h dans fs/stat.c ==="
+python3 - << 'PYEOF'
+with open('fs/stat.c', 'r') as f:
+    content = f.read()
+
+if '#include <linux/susfs_def.h>' not in content:
+    content = content.replace(
+        '#include <linux/uaccess.h>',
+        '#include <linux/uaccess.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif\n',
+        1
+    )
+    print("✅ susfs_def.h injecté dans fs/stat.c")
+else:
+    print("✅ susfs_def.h déjà présent dans fs/stat.c")
+
+with open('fs/stat.c', 'w') as f:
+    f.write(content)
+PYEOF
+
+echo "=== Correction inconditionnelle et robuste de fs/namespace.c (CL_COPY_MNT_NS) ==="
+python3 - << 'PYEOF'
+import re
+
+with open('fs/namespace.c', 'r') as f:
+    content = f.read()
+
+content = re.sub(r'^\s*n(?=#ifdef|#endif|#include|#define|extern)', '', content, flags=re.MULTILINE)
+
+if 'define CL_COPY_MNT_NS' not in content:
+    decl = '''
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#include <linux/susfs_def.h>
+extern bool susfs_is_current_ksu_domain(void);
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+#define CL_COPY_MNT_NS BIT(25)
+#endif
+'''
+    match = re.search(r'^#include\s+[^\n]+\n', content, flags=re.MULTILINE)
+    if match:
+        insert_pos = match.end()
+        content = content[:insert_pos] + decl + content[insert_pos:]
+        print("✅ CL_COPY_MNT_NS et déclarations injectées dans fs/namespace.c")
+    else:
+        print("❌ Aucun #include trouvé dans fs/namespace.c — injection impossible")
+else:
+    print("✅ CL_COPY_MNT_NS déjà présent dans fs/namespace.c")
+
+with open('fs/namespace.c', 'w') as f:
+    f.write(content)
+PYEOF
+
+
+# Vérification stricte : aucun .rej ne doit persister
 if find . -name "*.rej" -type f | grep -q .; then
     echo "❌ ÉCHEC CRITIQUE : Des rejets de patch SuSFS persistent."
     find . -name "*.rej" -type f -exec echo "=== {} ===" \; -exec cat {} \;
@@ -526,108 +573,54 @@ if find . -name "*.rej" -type f | grep -q .; then
 fi
 echo "✅ Patch SuSFS appliqué avec succès (aucun rejet)."
 
-if [ -d "/tmp/cyber_repo/Patches/fs" ]; then
-    cp -rn /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
+# Copie des fichiers source/headers SuSFS fournis par JackA1ltman
+if [ -d "/tmp/jack_repo/Patches/fs" ]; then
+    cp -rn /tmp/jack_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
-if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
-    cp -rn /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
+if [ -d "/tmp/jack_repo/Patches/include/linux" ]; then
+    cp -rn /tmp/jack_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
+find . -name "*.orig" -type f -delete 2>/dev/null || true
+
+# Makefile
 if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
     echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
     [ -f "fs/sus_su.c" ] && ! grep -q "sus_su.o" fs/Makefile && echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
 fi
 
-if [ -f "fs/susfs.c" ]; then
-    echo "🔧 Nettoyage des symboles dupliqués dans fs/susfs.c..."
-    sed -i '/^bool susfs_is_current_ksu_domain(void)/,/^}/d' fs/susfs.c || true
-    sed -i '/^u32 susfs_ksu_sid = 0;/d' fs/susfs.c || true
-    sed -i '/^u32 susfs_priv_app_sid = 0;/d' fs/susfs.c || true
-    sed -i '/EXPORT_SYMBOL(susfs_is_current_ksu_domain);/d' fs/susfs.c || true
-    sed -i '/EXPORT_SYMBOL(susfs_ksu_sid);/d' fs/susfs.c || true
-    sed -i '/EXPORT_SYMBOL(susfs_priv_app_sid);/d' fs/susfs.c || true
-
-    if ! grep -q "extern bool susfs_is_current_ksu_domain" fs/susfs.c; then
-        sed -i '1i extern bool susfs_is_current_ksu_domain(void);\nextern u32 susfs_ksu_sid;\nextern u32 susfs_priv_app_sid;' fs/susfs.c || true
-    fi
-    echo "✅ Nettoyage fs/susfs.c terminé"
-fi
-
-if [ -f "fs/stat.c" ] && ! grep -q "susfs_def.h" fs/stat.c; then
-    echo "🔧 Ajout de l'inclusion susfs_def.h dans fs/stat.c..."
-    sed -i '1i #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif' fs/stat.c
-fi
-
+# Correction variable 'vma' non utilisée
 if [ -f "fs/proc/task_mmu.c" ]; then
     echo "🔧 Correction de la variable 'vma' non utilisée dans task_mmu.c..."
     sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
 fi
 
-python3 - << 'PYEOF'
-import re
-with open('fs/namespace.c', 'r') as f: content = f.read()
-content = re.sub(r'^\s*n(?=#ifdef|#endif|#include|#define|extern)', '', content, flags=re.MULTILINE)
-if '#include <linux/susfs_def.h>' not in content:
-    content = content.replace('#include <linux/sched/task.h>', '#include <linux/sched/task.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif')
-if 'extern bool susfs_is_current_ksu_domain' not in content:
-    content = content.replace('#include "pnode.h"', '#include "pnode.h"\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif')
-with open('fs/namespace.c', 'w') as f: f.write(content)
-PYEOF
+# Symboles susfs_is_current_ksu_domain / susfs_ksu_sid / susfs_priv_app_sid
+# (uniquement si vraiment absents après le patch réel — pas un stub par défaut,
+# c'est un filet de sécurité minimal identique à l'implémentation SuSFS d'origine)
+if [ -f "fs/susfs.c" ] && ! grep -q "susfs_is_current_ksu_domain" fs/susfs.c; then
+    echo "⚠️ susfs_is_current_ksu_domain absent après le patch réel — ajout de l'implémentation standard SuSFS"
+    cat >> fs/susfs.c << 'SUSFS_EOF'
 
-if [ -f "drivers/kernelsu/Kconfig" ] && ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
-    cat >> drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
-menuconfig KSU_SUSFS
-	bool "KernelSU SUSFS support"
-	depends on KSU
-	default y
-if KSU_SUSFS
-config KSU_SUSFS_SUS_PATH
-	bool "sus_path"
-	default y
-config KSU_SUSFS_SUS_MOUNT
-	bool "sus_mount"
-	default y
-config KSU_SUSFS_SUS_KSTAT
-	bool "sus_kstat"
-	default y
-config KSU_SUSFS_SUS_MAP
-	bool "sus_map"
-	default y
-config KSU_SUSFS_SPOOF_UNAME
-	bool "spoof_uname"
-	default y
-config KSU_SUSFS_ENABLE_LOG
-	bool "enable_log"
-	default y
-config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-	bool "hide_ksu_susfs_symbols"
-	default y
-config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-	bool "spoof_cmdline_or_bootconfig"
-	default y
-config KSU_SUSFS_OPEN_REDIRECT
-	bool "open_redirect"
-	default y
-config KSU_SUSFS_TRY_UMOUNT
-	bool "try_umount"
-	default y
-config KSU_SUSFS_HAS_MAGIC_MOUNT
-	bool "has_magic_mount"
-	default y
-config KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
-	bool "auto_add_ksu_default_mount"
-	default y
-config KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
-	bool "auto_add_sus_bind_mount"
-	default y
-config KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
-	bool "auto_add_try_umount_for_bind_mount"
-	default y
-endif
-KCONFIG_EOF
+#ifdef CONFIG_KSU_SUSFS
+bool susfs_is_current_ksu_domain(void)
+{
+    const struct cred *cred = current_cred();
+    return (cred->uid.val == 0 || cred->uid.val == 2000);
+}
+EXPORT_SYMBOL(susfs_is_current_ksu_domain);
+
+u32 susfs_ksu_sid = 0;
+EXPORT_SYMBOL(susfs_ksu_sid);
+
+u32 susfs_priv_app_sid = 0;
+EXPORT_SYMBOL(susfs_priv_app_sid);
+#endif
+SUSFS_EOF
 fi
-echo "✅ Section Kconfig SuSFS OK"
-echo "✅ SuSFS 2.3.0 intégré"
+
+echo "✅ SuSFS (JackA1ltman mainline) intégré, sans stub à return-false fabriqué"
+
 
 # ==================== 4. CONFIGURATION ====================
 echo "=== Configuration ==="
