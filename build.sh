@@ -438,7 +438,27 @@ grep -E "CONFIG_KSU|CONFIG_KSU_SUSFS|CONFIG_KSU_MANUAL" out/.config || true
 echo "=== Patch signatures modules + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+# Patch tactile (même contenu que l’original, écriture sûre)
+cat >> techpack/display/msm/msm_drv.c << 'TACTILE_EOF'
+
+/* --- Début Patch Tactile --- */
+#include <linux/notifier.h>
+#include <linux/module.h>
+static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);
+int panel_register_notifier(struct notifier_block *nb) {
+    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);
+}
+EXPORT_SYMBOL(panel_register_notifier);
+int panel_unregister_notifier(struct notifier_block *nb) {
+    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);
+}
+EXPORT_SYMBOL(panel_unregister_notifier);
+void touch_set_state(int state) { return; }
+EXPORT_SYMBOL(touch_set_state);
+/* --- Fin Patch Tactile --- */
+TACTILE_EOF
+
+echo "✅ Patch tactile appliqué"
 
 # ==================== 6. COMPILATION ====================
 echo "=== Compilation finale ==="
