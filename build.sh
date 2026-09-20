@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Build ReSukiSU + SuSFS - VARIANTE SuSFS Inline Hook natif (pas de CONFIG_KSU_MANUAL_HOOK) ==="
+echo "=== Build ReSukiSU + SuSFS - VARIANTE SuSFS Inline Hook natif ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -23,7 +23,7 @@ cd kernel_sources
 git log --oneline -1
 
 # ==================== 2. INTÉGRATION ReSukiSU ====================
-echo "=== Intégration ReSukiSU (épinglée) ==="
+echo "=== Intégration ReSukiSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu KernelSU || true
 rm -rf /tmp/resukisu_pin
 git clone https://github.com/ReSukiSU/ReSukiSU.git /tmp/resukisu_pin
@@ -33,7 +33,7 @@ curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup
 
 # ==================== 4. INTÉGRATION SuSFS ====================
 echo ""
-echo "=== Intégration SuSFS depuis JackA1ltman/NonGKI_Kernel_Build_2nd (mainline) ==="
+echo "=== Intégration SuSFS (JackA1ltman mainline) ==="
 cd "$GITHUB_WORKSPACE"
 rm -rf /tmp/jack_repo
 git clone --branch mainline https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
@@ -249,13 +249,10 @@ extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
 else:
     print("✅ Déclaration déjà présente")
 
-# 2. Appel au début de setresuid (position fonctionnelle)
+# 2. Appel simple et propre (aucune chaîne → aucun problème d'échappement)
 HOOK = '''
 #ifdef CONFIG_KSU_SUSFS
-	/* Appel le plus tôt possible — comportement SuSFS / ReSukiSU */
-	if (ksu_handle_setresuid(ruid, euid, suid)) {
-		pr_info("ksu_handle_setresuid returned non-zero\\n");
-	}
+	ksu_handle_setresuid(ruid, euid, suid);
 #endif
 '''
 
@@ -269,7 +266,7 @@ if 'ksu_handle_setresuid(ruid, euid, suid)' not in src:
         print("❌ Impossible de trouver SYSCALL_DEFINE3(setresuid)")
         sys.exit(1)
     src = new_src
-    print("✅ Appel injecté au début de setresuid (position fonctionnelle)")
+    print("✅ Appel injecté au début de setresuid")
 else:
     print("✅ Appel déjà présent")
 
@@ -279,11 +276,12 @@ with open('kernel/sys.c', 'w') as f:
 count = src.count('ksu_handle_setresuid')
 print(f"✅ ksu_handle_setresuid apparaît {count} fois")
 if count < 2:
-    print("⚠️ Moins de 2 occurrences (déclaration + appel)")
+    print("⚠️ Moins de 2 occurrences")
+    sys.exit(1)
 PYEOF
 
 echo "=== Vérification visuelle ==="
-grep -n -A8 -B2 "ksu_handle_setresuid" kernel/sys.c || true
+grep -n -A6 -B2 "ksu_handle_setresuid" kernel/sys.c || true
 
 # ==================== 5. CONFIGURATION ====================
 echo "=== Configuration ==="
@@ -365,7 +363,7 @@ export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
-echo "=== Clonage de ksud (ReSukiSU main actuelle) ==="
+echo "=== Clonage de ksud (ReSukiSU main) ==="
 git clone https://github.com/ReSukiSU/ReSukiSU.git "$GITHUB_WORKSPACE/ksud-src"
 cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
 
