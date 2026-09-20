@@ -20,9 +20,13 @@ git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git \
 cd kernel_sources
 git log --oneline -1
 
-echo "=== Intégration ReSukiSU ==="
+echo "=== Intégration ReSukiSU (épinglée au 17 août 2026 ou juste après) ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
-curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
+rm -rf /tmp/resukisu_pin
+git clone https://github.com/ReSukiSU/ReSukiSU.git /tmp/resukisu_pin
+RESUKISU_COMMIT=$(cd /tmp/resukisu_pin && git rev-list -n 1 --before="2026-08-18 12:00:00" main)
+echo "Commit ReSukiSU épinglé : $RESUKISU_COMMIT"
+curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s -- "$RESUKISU_COMMIT"
 
 echo "=== Hooks ReSukiSU ==="
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
