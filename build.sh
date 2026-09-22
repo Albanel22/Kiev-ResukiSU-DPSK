@@ -820,6 +820,14 @@ if [ -f "boot-stock.img" ]; then
   cd repack
 
   ./magiskboot unpack boot.img
+
+  # Vérification que le DTB est bien extrait
+  if [ -f "dtb" ]; then
+    echo "✅ DTB extrait : $(stat -c%s dtb) octets"
+  else
+    echo "⚠️ Pas de DTB trouvé dans le boot.img (normal si header_version < 2)"
+  fi
+
   cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
 
   echo "=== Installation de ksud dans le ramdisk ==="
@@ -843,7 +851,6 @@ if [ -f "boot-stock.img" ]; then
 
   echo "=== Ajout du déclencheur init.rc pour lancer ksud au boot ==="
 
-  # Le ramdisk stock Motorola n'a pas toujours d'init.rc à la racine.
   rm -f /tmp/init.rc
   ./magiskboot cpio ramdisk.cpio "extract init.rc /tmp/init.rc" 2>/dev/null || true
 
@@ -878,14 +885,28 @@ RCEOF
     fi
   fi
 
-  # On injecte le fichier (qu'il soit nouveau ou modifié) dans le ramdisk
   ./magiskboot cpio ramdisk.cpio "add 0750 init.rc /tmp/init.rc"
 
+  echo "=== Repack final ==="
   ./magiskboot repack boot.img new-boot.img
   mv new-boot.img ../final_boot.img
 
+  # === CORRECTION TAILLE : Ajouter du padding pour égaler le boot stock ===
+  ORIGINAL_SIZE=$(stat -c%s boot.img 2>/dev/null || stat -f%z boot.img 2>/dev/null)
+  NEW_SIZE=$(stat -c%s ../final_boot.img 2>/dev/null || stat -f%z ../final_boot.img)
+
+  if [ "$NEW_SIZE" -lt "$ORIGINAL_SIZE" ]; then
+    echo "⚠️ Boot repacké ($NEW_SIZE octets) plus petit que l'original ($ORIGINAL_SIZE octets)"
+    echo "   Ajout de padding pour correspondre à la taille de la partition..."
+    truncate -s "$ORIGINAL_SIZE" ../final_boot.img
+    echo "✅ Padding ajouté. Nouvelle taille : $(stat -c%s ../final_boot.img) octets"
+  else
+    echo "✅ Taille du boot repacké OK ($NEW_SIZE octets)"
+  fi
+
   cd ..
 fi
+    
 
 # ==================== 9. SORTIE ====================
 echo "=== Copie vers output ==="
