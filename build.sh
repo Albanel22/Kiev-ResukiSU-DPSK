@@ -386,34 +386,29 @@ fi
 
 # ==================== 7. REPACK ====================
 echo "=== Téléchargement des images stock ==="
-cd $GITHUB_WORKSPACE
+cd "$GITHUB_WORKSPACE"
 
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260920/boot.img" 2>/dev/null || {
-  echo "Fallback mkbootimg..."
-  mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img \
-    --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 \
-    --ramdisk_offset 0x01000000 --tags_offset 0x00000100 \
-    --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
-}
+if ! curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260920/boot.img"; then
+  echo "❌ ERREUR : Échec du téléchargement de boot-stock.img. Interruption pour préserver l'init stock."
+  exit 1
+fi
 
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260920/dtbo.img" 2>/dev/null || true
 
-if [ -f "boot-stock.img" ]; then
-  echo "=== Repack avec magiskboot ==="
-  mkdir -p repack
-  cp boot-stock.img repack/boot.img
-  wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
-  unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
-  mv lib/x86_64/libmagiskboot.so repack/magiskboot
-  chmod +x repack/magiskboot
-  rm -rf Magisk-v27.0.apk lib/
-  cd repack
-  ./magiskboot unpack boot.img
-  cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
-  ./magiskboot repack boot.img new-boot.img
-  mv new-boot.img ../final_boot.img
-  cd ..
-fi
+echo "=== Repack avec magiskboot ==="
+mkdir -p repack
+cp boot-stock.img repack/boot.img
+wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
+unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
+mv lib/x86_64/libmagiskboot.so repack/magiskboot
+chmod +x repack/magiskboot
+rm -rf Magisk-v27.0.apk lib/
+cd repack
+./magiskboot unpack boot.img
+cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
+./magiskboot repack boot.img new-boot.img
+mv new-boot.img ../final_boot.img
+cd ..
 
 # ==================== 8. SORTIE ====================
 echo "=== Copie vers output ==="
